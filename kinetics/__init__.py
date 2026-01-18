@@ -9,6 +9,7 @@ from .power_law import PowerLawModel
 from .iglesia_co_insertion import IglesiaCOInsertionModel
 from .steynberg_carbide import SteynbergCarbideModel
 from .van_der_laan_alkenyl import VanDerLaanAlkenylModel
+from .brubach_2022 import BrubachModel
 
 __all__ = [
     "KineticModel",
@@ -16,4 +17,5 @@ __all__ = [
     "IglesiaCOInsertionModel",
     "SteynbergCarbideModel",
     "VanDerLaanAlkenylModel",
+    "BrubachModel",
 ]

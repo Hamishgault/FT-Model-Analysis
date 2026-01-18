@@ -12,7 +12,15 @@ class KineticModel(ABC):
 
     Implementations must provide `rate(T, P, Fi)` which returns an array-like
     of reaction rates r_j [mol m^-3 s^-1] for each reaction j.
+
+    Optionally a model can expose a `nu` attribute (numpy array of shape
+    (n_species, n_rxns)) describing the stoichiometry for its own
+    reactions. When provided, the `PFR` will prefer `model.nu` over a global
+    `nu` passed to the reactor.
     """
+
+    # Optional per-model stoichiometric matrix (n_species x n_rxns)
+    nu: np.ndarray | None = None
 
     @abstractmethod
     def rate(self, T: float, P: float, Fi: np.ndarray) -> np.ndarray:

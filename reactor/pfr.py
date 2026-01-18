@@ -28,11 +28,19 @@ class PFR:
         column j is nu_ij.
     """
 
-    def __init__(self, A: float, L: float, model: KineticModel, nu: np.ndarray):
+    def __init__(self, A: float, L: float, model: KineticModel, nu: Optional[np.ndarray] = None):
         self.A = A
         self.L = L
         self.model = model
-        self.nu = np.asarray(nu)
+
+        # Prefer the model's own nu (if provided). Otherwise use the nu passed
+        # to the reactor. If neither is available, error out.
+        if getattr(model, "nu", None) is not None:
+            self.nu = np.asarray(model.nu)
+        elif nu is not None:
+            self.nu = np.asarray(nu)
+        else:
+            raise ValueError("No stoichiometric matrix `nu` provided. Either pass `nu` to PFR or provide `model.nu`.")
 
     def run(self, T: float, P: float, F0: np.ndarray, z_eval: Optional[np.ndarray] = None, **kwargs):
         """Integrate the PFR.

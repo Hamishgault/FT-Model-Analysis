@@ -22,10 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from kinetics import (
-    PowerLawModel,
-    IglesiaCOInsertionModel,
-    SteynbergCarbideModel,
-    VanDerLaanAlkenylModel,
+    BrubachModel,
 )
 from reactor.pfr import PFR
 from utils.parameters import REACTOR, F_INLET, T0, P0, MODEL_PARAMS
@@ -34,10 +31,7 @@ from utils.species import SPECIES_IDX, NU, compute_selectivity
 
 
 AVAILABLE_MODELS = {
-    "PowerLaw": PowerLawModel,
-    "Iglesia": IglesiaCOInsertionModel,
-    "Steynberg": SteynbergCarbideModel,
-    "VanDerLaan": VanDerLaanAlkenylModel,
+    "Brubach": BrubachModel,
 }
 
 
@@ -114,7 +108,112 @@ def parse_args():
     parser.add_argument("--outdir", type=str, default="out", help="Output directory when saving plots/summaries")
     parser.add_argument("--zpoints", type=int, default=201, help="Number of axial points to evaluate")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--compare", type=str, default=None, help="Path to experimental dataset (JSON or CSV) to compare against")
+    parser.add_argument("--menu", action="store_true", help="Start interactive menu to access common functions")
     return parser.parse_args()
+
+
+def interactive_menu():
+    """Simple interactive menu to access common functions.
+
+    Options:
+    1) Run models
+    2) Compare with dataset (JSON/CSV)
+    3) Run tests (pytest)
+    4) Exit
+    """
+    import subprocess
+
+    while True:
+        print("\n=== FT Model Analysis - Interactive Menu ===")
+        print("1) Run models")
+        print("2) Compare with experimental dataset (JSON/CSV)")
+        print("3) Run tests (pytest)")
+        print("4) Exit")
+        try:
+            choice = input("Select option [1-4]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting menu.")
+            return
+
+        if choice == "1":
+            models = input("Enter models to run (comma-separated or 'all') [all]: ").strip() or "all"
+            save_ans = input("Save outputs? [y/N]: ").strip().lower()
+            outdir = input("Output directory [out]: ").strip() or "out"
+            zpoints = input("Axial points (int) [201]: ").strip() or "201"
+            try:
+                zpoints = int(zpoints)
+            except ValueError:
+                print("Invalid zpoints, using 201")
+                zpoints = 201
+            if models.lower() == "all":
+                model_names = list(AVAILABLE_MODELS.keys())
+            else:
+                model_names = [m.strip() for m in models.split(",") if m.strip() in AVAILABLE_MODELS]
+                if not model_names:
+                    print(f"No valid models provided. Available: {', '.join(AVAILABLE_MODELS.keys())}")
+                    continue
+            run_and_report(model_names, save=(save_ans == "y"), outdir=Path(outdir), z_points=zpoints)
+
+        elif choice == "2":
+            path = input("Path to experimental dataset (JSON or CSV): ").strip()
+            if not path:
+                print("No path provided. Aborting.")
+                continue
+            comp_outdir = input("Output dir for comparisons [out/comparisons]: ").strip() or "out/comparisons"
+            try:
+                from utils.io import load_experimental_json, load_experimental_csv
+                from utils.compare import make_inlet_from_experiment, compare_dataset, save_comparison_results
+                from utils.plotting import plot_model_vs_experiment
+            except Exception as e:
+                print(f"Failed to import comparison utilities: {e}")
+                continue
+
+            cmpath = Path(path)
+            if cmpath.suffix.lower() == ".json":
+                try:
+                    records = load_experimental_json(str(cmpath))
+                except Exception as e:
+                    print(f"Failed to load JSON: {e}")
+                    continue
+            else:
+                try:
+                    records = load_experimental_csv(str(cmpath))
+                except Exception as e:
+                    print(f"Failed to load CSV: {e}")
+                    continue
+
+            comp_outdir = Path(comp_outdir)
+            comp_outdir.mkdir(parents=True, exist_ok=True)
+
+            # Run models for each record and save overlays
+            for name, model in {n: AVAILABLE_MODELS[n](MODEL_PARAMS.get(n.lower(), None)) for n in AVAILABLE_MODELS}.items():
+                for rec in records:
+                    Fi = make_inlet_from_experiment(rec)
+                    pfr = PFR(REACTOR["A"], REACTOR["L"], model, nu=None)
+                    sol = pfr.run(rec.get("T", T0), P0, Fi, z_eval=np.linspace(0.0, REACTOR["L"], 201))
+                    outpath = comp_outdir / f"{name}_{rec.get('id')}_overlay.png"
+                    plot_model_vs_experiment(sol.t, sol.y, rec, SPECIES_IDX, str(outpath))
+            # aggregate & save comparison table
+            try:
+                comp_df = compare_dataset(records, AVAILABLE_MODELS[list(AVAILABLE_MODELS.keys())[0]](MODEL_PARAMS.get(list(AVAILABLE_MODELS.keys())[0].lower(), None)), REACTOR)
+                save_comparison_results(comp_df, str(comp_outdir / "comparison_summary.csv"))
+                print(f"Saved comparison overlays and summary to {comp_outdir}")
+            except Exception as e:
+                print(f"Failed to aggregate comparison table: {e}")
+
+        elif choice == "3":
+            print("Running pytest...")
+            try:
+                subprocess.run(["pytest", "-q"], check=False)
+            except Exception as e:
+                print(f"Failed to run pytest: {e}")
+
+        elif choice == "4":
+            print("Exiting menu.")
+            return
+        else:
+            print("Invalid option, please try again.")
 
 
 def main():
@@ -130,7 +229,46 @@ def main():
             return
 
     outdir = Path(args.outdir) if args.save else None
+
+    # If interactive menu requested, start it
+    if args.menu:
+        interactive_menu()
+        return
+
     results, summaries = run_and_report(model_names, save=args.save, outdir=outdir, z_points=args.zpoints)
+
+    # If user asked to compare with experimental dataset, run comparisons and save overlay plots
+    if args.compare:
+        from utils.io import load_experimental_json, load_experimental_csv
+        from utils.plotting import plot_model_vs_experiment
+        from utils.compare import compare_dataset, save_comparison_results
+
+        comp_outdir = Path(args.outdir or "out") / "comparisons"
+        comp_outdir.mkdir(parents=True, exist_ok=True)
+
+        # load records from JSON or CSV
+        cmpath = Path(args.compare)
+        if cmpath.suffix.lower() == ".json":
+            records = load_experimental_json(str(cmpath))
+        else:
+            records = load_experimental_csv(str(cmpath))
+
+        # run comparisons for each model and plot overlays
+        for name, model in {n: AVAILABLE_MODELS[n](MODEL_PARAMS.get(n.lower(), None)) for n in model_names}.items():
+            for rec in records:
+                # build inlet and run short PFR for plotting
+                from utils.compare import make_inlet_from_experiment
+                Fi = make_inlet_from_experiment(rec)
+                pfr = PFR(REACTOR["A"], REACTOR["L"], model, nu=None)
+                z, y = pfr.run(rec.get("T", T0), P0, Fi, z_eval=np.linspace(0.0, REACTOR["L"], args.zpoints)).t, pfr.run(rec.get("T", T0), P0, Fi, z_eval=np.linspace(0.0, REACTOR["L"], args.zpoints)).y
+                # save overlay
+                outpath = comp_outdir / f"{name}_{rec.get('id')}_overlay.png"
+                plot_model_vs_experiment(z, y, rec, SPECIES_IDX, str(outpath))
+
+        # aggregate & save comparison table
+        comp_df = compare_dataset(records, AVAILABLE_MODELS[model_names[0]](MODEL_PARAMS.get(model_names[0].lower(), None)), REACTOR, z_points=args.zpoints)
+        save_comparison_results(comp_df, str(comp_outdir / "comparison_summary.csv"))
+        print(f"Saved comparison overlays and summary to {comp_outdir}")
 
     # Print brief summary
     for name, s in summaries.items():

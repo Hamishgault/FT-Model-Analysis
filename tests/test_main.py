@@ -9,9 +9,10 @@ from main import run_and_report
 
 def test_run_and_report_saves(tmp_path: Path):
     outdir = tmp_path / "out"
-    results, summaries = run_and_report(["PowerLaw"], save=True, outdir=outdir, z_points=51)
+    # only Brubach is available in current configuration
+    results, summaries = run_and_report(["Brubach"], save=True, outdir=outdir, z_points=51)
 
-    assert "PowerLaw" in summaries
+    assert "Brubach" in summaries
 
     conv = outdir / "conversion_co.png"
     sel = outdir / "selectivity.png"
@@ -23,4 +24,4 @@ def test_run_and_report_saves(tmp_path: Path):
 
     with open(summ) as fh:
         data = json.load(fh)
-    assert "PowerLaw" in data
+    assert "Brubach" in data

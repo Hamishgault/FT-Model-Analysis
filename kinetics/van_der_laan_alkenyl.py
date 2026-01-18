@@ -17,6 +17,10 @@ class VanDerLaanAlkenylModel(KineticModel):
         self.params = params or {"k": 1.2e-3, "alpha_H2": 0.2}
         self.n_rxns = 1
 
+        # provide effective single-reaction nu
+        from utils.species import NU
+        self.nu = NU.sum(axis=1).reshape(-1, 1)
+
     def rate(self, T: float, P: float, Fi: np.ndarray) -> np.ndarray:
         iCO = SPECIES_IDX["CO"]
         iH2 = SPECIES_IDX["H2"]

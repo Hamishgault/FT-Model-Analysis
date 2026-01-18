@@ -5,8 +5,8 @@ from utils.species import SPECIES_IDX, NU, compute_selectivity
 
 
 def test_species_indices_and_nu_shape():
-    assert len(SPECIES_IDX) == 6
-    assert NU.shape == (6, 3)
+    assert len(SPECIES_IDX) == 7
+    assert NU.shape == (7, 3)
 
 
 def test_compute_selectivity_basic():

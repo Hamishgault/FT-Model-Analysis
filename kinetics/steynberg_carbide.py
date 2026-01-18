@@ -20,6 +20,10 @@ class SteynbergCarbideModel(KineticModel):
         self.params = params or {"k": 2e-3, "K_CO": 1.0}
         self.n_rxns = 1
 
+        # single-column nu (effective)
+        from utils.species import NU
+        self.nu = NU.sum(axis=1).reshape(-1, 1)
+
     def rate(self, T: float, P: float, Fi: np.ndarray) -> np.ndarray:
         iCO = SPECIES_IDX["CO"]
         k = self.params["k"]

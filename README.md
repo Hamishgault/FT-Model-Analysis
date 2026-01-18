@@ -76,6 +76,16 @@ By default, plots are shown interactively. Use `--save` to also write PNGs and a
 
 A GitHub Actions workflow is provided in `.github/workflows/python-tests.yml` that runs the test suite on push and pull requests for Python 3.11 and 3.12.
 
+Per-model stoichiometry
+
+- Models may expose a `nu` attribute (numpy array shape `n_species x n_rxns`). When present, the `PFR` will use `model.nu` in preference to the global `nu` passed to the reactor. This enables each kinetic module to declare its own stoichiometric mapping cleanly.
+
+Experimental data and comparisons 📁
+
+- Add raw experimental files to `data/raw/` and a per-dataset metadata JSON to `data/metadata/`.
+- Use `utils.io.load_experimental_json` and `utils.io.process_sample_records` to load and preprocess datasets into a standard table.
+- Use `utils.compare.compare_dataset` to run a model against the dataset and compute simple comparison metrics (CO outlet, selectivity differences).
+
 You can run tests locally using the provided helper scripts:
 
 PowerShell (Windows):

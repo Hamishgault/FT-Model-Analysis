@@ -23,6 +23,12 @@ class PowerLawModel(KineticModel):
         self.params = params or {"k": 1e-3, "n_CO": 1.0, "n_H2": 0.5}
         self.n_rxns = 1
 
+        # Provide a single-column nu consistent with the global NU distribution
+        # by summing the global product channels into one effective reaction.
+        from utils.species import NU
+
+        self.nu = NU.sum(axis=1).reshape(-1, 1)
+
     def rate(self, T: float, P: float, Fi: np.ndarray) -> np.ndarray:
         """Compute single effective rate (placeholder).
 

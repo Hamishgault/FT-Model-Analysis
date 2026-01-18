@@ -18,10 +18,10 @@ are nu_ij (change in species i per mole of reaction j).
 """
 import numpy as np
 
-SPECIES = ["CO", "H2", "CH4", "C2_4", "C5plus", "H2O"]
+SPECIES = ["CO", "H2", "CH4", "C2_4", "C5plus", "H2O", "CO2"]
 SPECIES_IDX = {name: i for i, name in enumerate(SPECIES)}
 
-# nu: rows = species, cols = reactions
+# nu: rows = species, cols = reactions (placeholder global NU)
 NU = np.array([
     # r0   r1   r2
     [-1.0, -2.0, -5.0],  # CO
@@ -30,6 +30,7 @@ NU = np.array([
     [0.0,   1.0,  0.0],  # C2_4
     [0.0,   0.0,  1.0],  # C5plus
     [1.0,   2.0,  5.0],  # H2O
+    [0.0,   0.0,  0.0],  # CO2 (placeholder)
 ])
 
 
