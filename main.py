@@ -49,18 +49,45 @@ def summary_from_profiles(F0, y_out):
     return {"CO_outlet": float(F_out[SPECIES_IDX["CO"]]), "CO_conversion": float(CO_conv), "selectivity": sel}
 
 
-def run_and_report(model_names: Iterable[str], save: bool = False, outdir: Path | None = None, z_points: int = 201):
+def run_and_report(model_names: Iterable[str], save: bool = False, outdir: Path | None = None, z_points: int = 201, diagnostics: bool = False, diag_outdir: str | None = None):
     models = {name: AVAILABLE_MODELS[name](MODEL_PARAMS.get(name.lower(), None)) for name in model_names}
 
     results = {}
     summaries = {}
 
     for name, model in models.items():
+        # Apply temporary parameter overrides for Brubach if provided
+        if name.lower() == "brubach":
+            overrides = MODEL_PARAMS.get("brubach", {}) or {}
+            # Respect any CLI overrides added to overrides dict earlier
+            overrides.update({k: v for k, v in MODEL_PARAMS.get("brubach_overrides", {}).items() if v is not None})
+            if overrides:
+                model = AVAILABLE_MODELS[name](overrides)
+
         logging.info("Running model: %s", name)
         z, y = run_model(model, NU, REACTOR, F_INLET.copy(), T0, P0, z_points=z_points)
         results[name] = (z, y)
         summaries[name] = summary_from_profiles(F_INLET, y)
         logging.info("Model %s summary: %s", name, summaries[name])
+
+        # if diagnostics requested, compute per-z diagnostics and optionally save plots
+        if diagnostics:
+            try:
+                from utils.plotting import compute_model_diagnostics, plot_diagnostics
+                diag = compute_model_diagnostics(model, T0, P0, z, y)
+                print(f"Diagnostics for model {name} at z points [0, L/2, L]:")
+                for idx, zpt in enumerate((0, len(z) // 2, -1)):
+                    print(f" z={z[zpt]:.3f} m: theta_CH2={diag['theta_CH2'][zpt]:.3e}, r_growth={diag['r_growth'][zpt]:.3e}, r_ch4={diag['r_ch4'][zpt]:.3e}, r_c2_4={diag['r_c2_4'][zpt]:.3e}, r_c5p={diag['r_c5p'][zpt]:.3e}")
+
+                dout = None
+                if diag_outdir is not None:
+                    dout = Path(diag_outdir)
+                    dout.mkdir(parents=True, exist_ok=True)
+                outpath = dout / f"{name}_diagnostics.png" if dout is not None else None
+                plot_diagnostics(z, diag, outpath)
+                logging.info("Saved diagnostics plot to %s", outpath) if outpath is not None else None
+            except Exception as e:
+                logging.warning("Failed to compute diagnostics for %s: %s", name, e)
 
     # Plot conversion (CO)
     plt.figure()
@@ -110,6 +137,12 @@ def parse_args():
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--compare", type=str, default=None, help="Path to experimental dataset (JSON or CSV) to compare against")
     parser.add_argument("--menu", action="store_true", help="Start interactive menu to access common functions")
+    # Temporary parameter overrides for Brubach tuning
+    parser.add_argument("--k8", type=float, default=None, help="Override k8 (chain growth) in BrubachParams")
+    parser.add_argument("--k9a", type=float, default=None, help="Override k9a (methane termination) in BrubachParams")
+    parser.add_argument("--gamma10", type=float, default=None, help="Override Gamma10 (J/mol) in BrubachParams")
+    parser.add_argument("--diagnostics", action="store_true", help="Compute and plot diagnostic variables (theta_CH2, rates) vs reactor length")
+    parser.add_argument("--diag-outdir", type=str, default=None, help="Directory to save diagnostic plots (if --diagnostics)")
     return parser.parse_args()
 
 
@@ -230,12 +263,25 @@ def main():
 
     outdir = Path(args.outdir) if args.save else None
 
+    # Apply CLI overrides for Brubach parameters if provided
+    if args.k8 is not None or args.k9a is not None or args.gamma10 is not None:
+        MODEL_PARAMS.setdefault("brubach_overrides", {})
+        if args.k8 is not None:
+            MODEL_PARAMS["brubach_overrides"]["k8"] = args.k8
+        if args.k9a is not None:
+            MODEL_PARAMS["brubach_overrides"]["k9a"] = args.k9a
+        if args.gamma10 is not None:
+            MODEL_PARAMS["brubach_overrides"]["Gamma10"] = args.gamma10
+
     # If interactive menu requested, start it
     if args.menu:
         interactive_menu()
         return
 
-    results, summaries = run_and_report(model_names, save=args.save, outdir=outdir, z_points=args.zpoints)
+    diagnostics = args.diagnostics
+    diag_outdir = args.diag_outdir
+
+    results, summaries = run_and_report(model_names, save=args.save, outdir=outdir, z_points=args.zpoints, diagnostics=diagnostics, diag_outdir=diag_outdir)
 
     # If user asked to compare with experimental dataset, run comparisons and save overlay plots
     if args.compare:

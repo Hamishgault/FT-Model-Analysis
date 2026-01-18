@@ -131,3 +131,81 @@ def plot_model_vs_experiment(z_model, F_model, exp_record: dict, species_keys: d
     else:
         plt.show()
     return fig
+
+
+# Diagnostics utilities
+
+def compute_model_diagnostics(model, T, P, z, y):
+    """Compute diagnostics (theta_CH2 and key rates) along axial positions.
+
+    Returns a dict with arrays for: theta_CH2, r_growth (r4g), r_ch4 (r5), r_c2_4 (r6), r_c5p (r7)
+    """
+    import numpy as np
+
+    n = y.shape[1]
+    theta_CH2 = np.zeros(n)
+    r_growth = np.zeros(n)
+    r_ch4 = np.zeros(n)
+    r_c2_4 = np.zeros(n)
+    r_c5p = np.zeros(n)
+
+    for i in range(n):
+        Fi = y[:, i]
+        # If model provides a solve_surface, use it for coverages
+        if hasattr(model, "solve_surface"):
+            cov = model.solve_surface(T, P, Fi)
+            theta_CH2[i] = cov.get("theta_CH2", cov.get("theta_CH_2", 0.0) if cov is not None else 0.0)
+        else:
+            theta_CH2[i] = 0.0
+        rates = model.rate(T, P, Fi)
+        rates = np.atleast_1d(rates)
+        # indices per BrubachModel: r4g index 4, r5 index 5, r6 index 6, r7 index 7
+        if rates.size >= 8:
+            r_growth[i] = rates[4]
+            r_ch4[i] = rates[5]
+            r_c2_4[i] = rates[6]
+            r_c5p[i] = rates[7]
+        else:
+            # best-effort mapping for simpler models
+            r_growth[i] = 0.0
+            r_ch4[i] = rates[-1] if rates.size >= 1 else 0.0
+            r_c2_4[i] = 0.0
+            r_c5p[i] = 0.0
+
+    return {
+        "theta_CH2": theta_CH2,
+        "r_growth": r_growth,
+        "r_ch4": r_ch4,
+        "r_c2_4": r_c2_4,
+        "r_c5p": r_c5p,
+    }
+
+
+def plot_diagnostics(z, diag, outpath=None):
+    """Plot theta_CH2 and rates vs reactor length."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    ax1.plot(z, diag["theta_CH2"], label=r"$\theta_{CH2}$")
+    ax1.set_ylabel(r"$\theta_{CH2}$")
+    ax1.grid(True)
+
+    ax2.plot(z, diag["r_growth"], label="r_growth")
+    ax2.plot(z, diag["r_ch4"], label="r_CH4")
+    ax2.plot(z, diag["r_c2_4"], label="r_C2_4")
+    ax2.plot(z, diag["r_c5p"], label="r_C5+")
+    ax2.set_ylabel("Rate (mol m^-3 s^-1)")
+    ax2.set_xlabel("Reactor length, m")
+    ax2.legend()
+    ax2.grid(True)
+
+    plt.tight_layout()
+    if outpath:
+        Path(outpath).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(outpath, dpi=200)
+        plt.close(fig)
+    else:
+        plt.show()
+    return fig
