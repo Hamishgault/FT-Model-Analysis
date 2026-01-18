@@ -1,0 +1,8 @@
+# Core dependencies for FT model analysis
+numpy>=1.25
+scipy>=1.11
+matplotlib>=3.8
+
+# Optional/dev
+pytest>=7.4
+pytest-cov>=4.0
