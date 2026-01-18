@@ -72,6 +72,24 @@ python main.py --models PowerLaw,Iglesia --save
 
 By default, plots are shown interactively. Use `--save` to also write PNGs and a `summaries.json` into `--outdir`.
 
+## Continuous integration (GitHub Actions) 🤖
+
+A GitHub Actions workflow is provided in `.github/workflows/python-tests.yml` that runs the test suite on push and pull requests for Python 3.11 and 3.12.
+
+You can run tests locally using the provided helper scripts:
+
+PowerShell (Windows):
+
+```powershell
+.\run_tests.ps1
+```
+
+Bash (macOS / Linux):
+
+```bash
+./run_tests.sh
+```
+
 ## Tests ✅
 
 Run unit tests using `pytest` from the project root (inside the activated `.venv`):
