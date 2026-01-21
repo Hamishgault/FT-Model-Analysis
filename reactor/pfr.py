@@ -78,4 +78,9 @@ class PFR:
             z_eval = np.linspace(0.0, self.L, 101)
 
         sol = solve_ivp(odes, z_span, F0, t_eval=z_eval, vectorized=False, **kwargs)
+        # Clip small negative numerical noise to zero to ensure non-negative flows
+        try:
+            sol.y = np.clip(sol.y, 0.0, None)
+        except Exception:
+            pass
         return sol

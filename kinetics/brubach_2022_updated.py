@@ -1,15 +1,17 @@
-"""Reduced implementation of Brübach et al. (2022) CO2-FTS kinetic model.
+"""Brubach et al. (2022) CO2-FTS kinetic model - Phase 1 (Corrected Reduced Implementation).
 
-This is a simplified, implementation-ready mechanistic model capturing the
-main pathways (H2/CO2 adsorption equilibria, CO adsorption kinetics, RWGS,
-H-assisted CO dissociation to CH2*, chain initiation/growth, and lumped
-termination to CH4, C2-4, C5+). Surface coverages are solved using a
-steady-state root-finding approach with a reduced set of coverages.
+Reference: Brübach, L.; Hodonj, D.; Biffar, L.; Pfeifer, P. 
+Detailed Kinetic Modeling of CO2-Based Fischer–Tropsch Synthesis. 
+Catalysts 2022, 12(6), 630. https://doi.org/10.3390/catal12060630
 
-This model intentionally lumps chain species (R_n and IR_n) and termination
-channels for initial reproducible behavior. It uses the parameter set
-provided in the specification and exposes a per-model `nu` mapping so the
-`PFR` can use model.nu directly.
+This implementation uses the mechanisms and parameters from Table 4 of the paper:
+- Direct CO2 dissociation for RWGS (Table 2)
+- H-assisted CO dissociation for FTS (Table 3)
+- All parameter values from paper's Table 4 (regression results)
+- O* and HCO* treated implicitly via quasi-equilibrium (K5b, K6a)
+
+Phase 1 (current): Corrected reduced model with proper mechanistic expressions
+Phase 2 (future): Full chain-length tracking (θ_R_n, θ_IR_n individual unknowns)
 """
 from __future__ import annotations
 
@@ -195,7 +197,7 @@ class BrubachModel(KineticModel):
 
             # ISO-chain pseudo-reactions
             # Growth of ISO chains
-            r12_iso_grow = 0.1 * prm.k11 * thIR * thCH2  # assume same rate as branching, scaled
+            r12_iso_grow = 0.1 * prm.k11 * thIR * thCH2
             # Termination of ISO chains
             r13_iso_term = 0.1 * prm.k10 * thIR / thOH_phi
 
@@ -211,9 +213,7 @@ class BrubachModel(KineticModel):
             # Balance for R*: produced by r7 (init) and r8 (growth), consumed by r9, r10, r11
             bal_R = r7_init + r8_grow - r9_alkane - r10_alkene - r11_branch
 
-            # Balance for OH*: produced by r5 (RWGS) and r4 (H2O ads), 
-            # consumed implicitly in r6 (via damping term θ_OH^phi in denominator)
-            # Simplified: bal_OH ≈ production from r5, r4 (net small since OH is recycled in r6)
+            # Balance for OH*: produced by r5 (RWGS) and r4 (H2O ads)
             bal_OH = r5_rwgs + r4 - (0.01 * (r9_alkane + r10_alkene + r13_iso_term))
 
             # Balance for IR* (iso-alkyl chains)
@@ -321,32 +321,6 @@ class BrubachModel(KineticModel):
         # Cache for continuation
         self._last_coverages = dict(coverages)
         return coverages
-
-        # cache for continuation
-        self._last_coverages = dict(coverages)
-        return coverages
-
-    def rate(self, T: float, P: float, Fi: np.ndarray) -> np.ndarray:
-        # Solve surface coverages first
-        cov = self.solve_surface(T, P, Fi)
-        ths = cov["theta_*"]
-        thH = cov["theta_H"]
-        thCO2 = cov["theta_CO2"]
-        thCO = cov["theta_CO"]
-        thOH = cov["theta_OH"]
-        thCH2 = cov["theta_CH2"]
-        thR = cov["theta_R"]
-        thO = cov.get("theta_O", 0.0)
-        thHCO = cov.get("theta_HCO", 0.0)
-
-        prm = self.params
-
-        # rates consistent with solve_surface definitions (extended)
-        # Recompute mole fractions / partial pressures for consistency
-        F_total = max(Fi.sum(), 1e-12)
-        y_CO = Fi[SPECIES_IDX["CO"]] / F_total
-        y_H2 = Fi[SPECIES_IDX["H2"]] / F_total
-        pCO_bar = y_CO * (P / 1e5)
 
     def rate(self, T: float, P: float, Fi: np.ndarray) -> np.ndarray:
         """Compute reaction rates per Brubach et al. (2022) kinetic expressions.

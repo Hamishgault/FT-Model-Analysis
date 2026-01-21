@@ -138,9 +138,11 @@ def parse_args():
     parser.add_argument("--compare", type=str, default=None, help="Path to experimental dataset (JSON or CSV) to compare against")
     parser.add_argument("--menu", action="store_true", help="Start interactive menu to access common functions")
     # Temporary parameter overrides for Brubach tuning
+    parser.add_argument("--k6", type=float, default=None, help="Override k6 (CO hydrogenation RDS) in BrubachParams")
     parser.add_argument("--k8", type=float, default=None, help="Override k8 (chain growth) in BrubachParams")
     parser.add_argument("--k9a", type=float, default=None, help="Override k9a (methane termination) in BrubachParams")
     parser.add_argument("--gamma10", type=float, default=None, help="Override Gamma10 (J/mol) in BrubachParams")
+    parser.add_argument("--cat-loading", type=float, default=None, help="Override catalyst loading (g/m^3) in BrubachParams")
     parser.add_argument("--diagnostics", action="store_true", help="Compute and plot diagnostic variables (theta_CH2, rates) vs reactor length")
     parser.add_argument("--diag-outdir", type=str, default=None, help="Directory to save diagnostic plots (if --diagnostics)")
     return parser.parse_args()
@@ -264,14 +266,18 @@ def main():
     outdir = Path(args.outdir) if args.save else None
 
     # Apply CLI overrides for Brubach parameters if provided
-    if args.k8 is not None or args.k9a is not None or args.gamma10 is not None:
+    if args.k6 is not None or args.k8 is not None or args.k9a is not None or args.gamma10 is not None or args.cat_loading is not None:
         MODEL_PARAMS.setdefault("brubach_overrides", {})
+        if args.k6 is not None:
+            MODEL_PARAMS["brubach_overrides"]["k6"] = args.k6
         if args.k8 is not None:
             MODEL_PARAMS["brubach_overrides"]["k8"] = args.k8
         if args.k9a is not None:
             MODEL_PARAMS["brubach_overrides"]["k9a"] = args.k9a
         if args.gamma10 is not None:
             MODEL_PARAMS["brubach_overrides"]["Gamma10"] = args.gamma10
+        if args.cat_loading is not None:
+            MODEL_PARAMS["brubach_overrides"]["cat_loading"] = args.cat_loading
 
     # If interactive menu requested, start it
     if args.menu:
