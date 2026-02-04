@@ -90,6 +90,22 @@ src/
 
 ## Usage
 
+### Demo Script
+
+A complete runnable demo is provided in [examples/run_bifunctional_demo.py](examples/run_bifunctional_demo.py):
+
+```bash
+python examples/run_bifunctional_demo.py
+```
+
+This demo demonstrates:
+- Loading the component registry from YAML
+- Building an IDAES flowsheet with a bifunctional packed-bed reactor
+- Setting up inlet conditions (70% CO2 + 30% H2 at 523 K, 20 bar)
+- Displaying the reaction network configuration (RWGS + FT + Zeolite)
+- Model structure summary with spatial discretization
+- Inlet composition analysis
+
 ### Basic Workflow
 
 ```python
