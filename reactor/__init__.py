@@ -1,1 +1,0 @@
-"""Reactor package for 1D plug-flow reactor (PFR) solver."""
