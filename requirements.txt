@@ -6,3 +6,4 @@ matplotlib
 scipy
 python-dotenv
 pytest
+pyyaml
