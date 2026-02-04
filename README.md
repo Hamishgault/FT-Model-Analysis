@@ -21,8 +21,9 @@ src/
 │   ├── component.py   # Component class definition
 │   ├── registry.py    # ComponentRegistry for managing component definitions
 │   └── components.yaml # YAML definitions for 39 chemical species
-├── ft_model/           # Fischer-Tropsch and RWGS reactor models
-│   ├── rwgs_reactor.py # Custom IDAES RWGS packed-bed reactor with 1D spatial discretization
+├── ft_model/           # Fischer-Tropsch and specialized reactor models
+│   ├── rwgs_reactor.py # RWGS packed-bed reactor with 1D spatial discretization
+│   ├── bifunctional_reactor.py  # Bifunctional reactor combining RWGS + FT + zeolite
 │   ├── kinetics.py    # FT rate expressions and reaction networks
 │   └── reactor.py     # IDAES-based FT reactor unit models
 ├── zeolite_model/      # Zeolite conversion kinetics and models
@@ -69,6 +70,18 @@ src/
   - Isothermal operation with optional temperature constraint
   - Performance reporting with inlet/outlet conditions
 
+### Bifunctional Reactor Model
+- **Combined RWGS + Fischer-Tropsch + Zeolite Upgrading**: Advanced packed-bed reactor with coupled multi-stage reactions
+  - **Stage 1 - RWGS**: CO2 + H2 ↔ CO + H2O (produces syngas for FT)
+  - **Stage 2 - Fischer-Tropsch Synthesis**: CO + H2 → CH4, C2H4, C2H6, C3H6, C3H8, C5+, wax
+  - **Stage 3 - Zeolite Upgrading**: Wax → Distillate → Naphtha, Olefins → Aromatics → Coke
+  - 1D spatial discretization along catalyst bed (catalyst weight dimension)
+  - 19-component system including RWGS feeds, FT products, and zeolite products
+  - Coupled material balance equations with contributions from all three reaction networks
+  - Pressure-dependent FT kinetics and first-order zeolite cracking rates
+  - Partial pressure calculations and isothermal operation
+  - Full performance reporting with inlet/outlet product yields
+
 ### Component Database System
 - Comprehensive database of 39+ chemical species (CO2, H2, CO, H2O, CH4, C2H4, etc.)
 - YAML-based component definitions with thermodynamic properties
@@ -80,7 +93,7 @@ src/
 ### Basic Workflow
 
 ```python
-from src.ft_model import kinetics, reactor, rwgs_reactor
+from src.ft_model import kinetics, reactor, rwgs_reactor, bifunctional_reactor
 from src.zeolite_model import kinetics as zeo_kinetics
 from src.flowsheet import flowsheet
 from src.utils import lumping, parameters
@@ -93,8 +106,25 @@ comp_registry.load_from_yaml('src/components/components.yaml')
 # Load parameters from environment
 params = parameters.load_parameters()
 
-# Build RWGS reactor
+# Build RWGS reactor (single reaction system)
 rwgs = rwgs_reactor.PackedBedRWGSReactorData()
+
+# Build bifunctional reactor (RWGS + FT + zeolite)
+inlet_conditions = {
+    'CO2': 1.0,
+    'H2': 2.0,
+    'CO': 0.1,
+    'H2O': 0.05,
+    # ... other components
+}
+bifunctional = bifunctional_reactor.build_bifunctional_reactor(
+    flowsheet=None,  # parent flowsheet
+    property_package=None,  # property package
+    inlet_flow=inlet_conditions,
+    inlet_temperature=523.15,  # 250°C
+    inlet_pressure=30 * 101325.0,  # 30 bar
+    W_total=5.0  # 5 kg catalyst
+)
 
 # Build FT reactor
 ft_reactor = reactor.build_ft_reactor(params)
@@ -103,23 +133,29 @@ ft_reactor = reactor.build_ft_reactor(params)
 zeo_reactor = zeolite_reactor.build_zeolite_reactor(params)
 
 # Build complete flowsheet
-fs = flowsheet.build_flowsheet(rwgs, ft_reactor, zeo_reactor)
+fs = flowsheet.build_flowsheet(rwgs, bifunctional, ft_reactor, zeo_reactor)
 ```
 
 ## Testing
 
 Run all tests with pytest:
 ```bash
-pytest tests/          # Run all 78 tests
+pytest tests/          # Run all 134 tests
 pytest tests/test_rwgs_reactor.py -v  # Run RWGS reactor tests (23 tests)
+pytest tests/test_bifunctional_reactor.py -v  # Run bifunctional reactor tests (56 tests)
 ```
 
 Test coverage includes:
 - Component database validation (39 tests)
 - RWGS reactor physics and structure (23 tests)
+- Bifunctional reactor physics and multi-stage reactions (56 tests)
 - Unit model configuration and initialization
 - Stoichiometric balance validation
 - Reaction kinetics verification
+- Material balance equations with DerivativeVar
+- Partial pressure calculations
+- Coupled reaction networks
+- Zeolite cracking stoichiometry
 
 ## License
 
