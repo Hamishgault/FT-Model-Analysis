@@ -140,22 +140,36 @@ fs = flowsheet.build_flowsheet(rwgs, bifunctional, ft_reactor, zeo_reactor)
 
 Run all tests with pytest:
 ```bash
-pytest tests/          # Run all 134 tests
+pytest tests/          # Run all 161 tests
 pytest tests/test_rwgs_reactor.py -v  # Run RWGS reactor tests (23 tests)
-pytest tests/test_bifunctional_reactor.py -v  # Run bifunctional reactor tests (56 tests)
+pytest tests/test_bifunctional_reactor.py -v  # Run bifunctional reactor structural tests (56 tests)
+pytest tests/test_bifunctional_reactor_integration.py -v  # Run bifunctional integration tests (27 tests)
 ```
 
 Test coverage includes:
 - Component database validation (39 tests)
 - RWGS reactor physics and structure (23 tests)
-- Bifunctional reactor physics and multi-stage reactions (56 tests)
-- Unit model configuration and initialization
+- Bifunctional reactor structural tests (56 tests)
+- Bifunctional reactor integration tests (27 tests):
+  * Spatial domain creation and bounds
+  * State variable initialization
+  * Partial pressure calculations
+  * Total flow balance constraints
+  * RWGS, FT, and zeolite rate expressions
+  * Material balance with DerivativeVar
+  * Inlet boundary conditions
+  * Kinetic parameter settings
+  * Non-negative flow constraints
+  * Temperature and pressure bounds
+  * Isothermal and constant pressure modes
+  * Helper function availability
 - Stoichiometric balance validation
 - Reaction kinetics verification
 - Material balance equations with DerivativeVar
 - Partial pressure calculations
 - Coupled reaction networks
 - Zeolite cracking stoichiometry
+- Legacy tests (16 tests)
 
 ## License
 
