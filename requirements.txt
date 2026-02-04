@@ -1,0 +1,8 @@
+idaes-pse
+pyomo
+numpy
+pandas
+matplotlib
+scipy
+python-dotenv
+pytest
