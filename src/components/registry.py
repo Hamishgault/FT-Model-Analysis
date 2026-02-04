@@ -37,11 +37,11 @@ class ComponentRegistry:
         if data_dir is None:
             # Get the data directory relative to this file
             current_dir = Path(__file__).parent
-            data_dir = current_dir / 'data'
+            data_dir_path: Path = current_dir / 'data'
         else:
-            data_dir = Path(data_dir)
+            data_dir_path = Path(data_dir)
         
-        self.data_dir = data_dir
+        self.data_dir: Path = data_dir_path
         self._components: Dict[str, Component] = {}
         self._load_all_components()
     
