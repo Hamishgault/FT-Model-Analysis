@@ -19,7 +19,7 @@ This project implements a **bifunctional packed-bed reactor** combining RWGS (Re
 
 ```
 src/ft_model/
-├── ft_rwgs_reactor_corrected.py     # ✓ PRODUCTION: Corrected FT reactor with verified stoichiometry
+├── ft_rwgs_zeolite_reactor.py       # ✓ PRODUCTION: RWGS+FT with zeolite upgrading
 ├── ft_rwgs_reactor.py               # Extended FT reactor with all 4 reactions
 ├── simplified_rwgs_reactor.py       # RWGS-only reference implementation
 └── [legacy files]
@@ -62,7 +62,7 @@ Documentation/
 
 ### Bifunctional Packed-Bed Reactor with Verified Stoichiometry
 
-**Production Model**: [src/ft_model/ft_rwgs_reactor_corrected.py](src/ft_model/ft_rwgs_reactor_corrected.py)
+**Production Model**: [src/ft_model/ft_rwgs_zeolite_reactor.py](src/ft_model/ft_rwgs_zeolite_reactor.py)
 
 **Four Reactions (All Atom-Balanced)**:
 1. **RWGS**: CO₂ + H₂ ↔ CO + H₂O (water-gas shift, equilibrium)
@@ -96,7 +96,7 @@ Alternative model for RWGS validation: [src/ft_model/simplified_rwgs_reactor.py]
 The corrected reactor with verified stoichiometry:
 
 ```bash
-python src/ft_model/ft_rwgs_reactor_corrected.py
+python src/ft_model/ft_rwgs_zeolite_reactor.py
 ```
 
 **Expected Output**:
@@ -130,7 +130,7 @@ DIFFERENCE: 0.00% ✓
 ### Basic Python Usage
 
 ```python
-from src.ft_model.ft_rwgs_reactor_corrected import (
+from src.ft_model.ft_rwgs_zeolite_reactor import (
     FTRWGSReactor,
     discretize_reactor,
     verify_atom_conservation,
@@ -173,7 +173,7 @@ The reactor has been thoroughly tested:
 
 ```bash
 # Run the self-test included in the production reactor
-python src/ft_model/ft_rwgs_reactor_corrected.py
+python src/ft_model/ft_rwgs_zeolite_reactor.py
 ```
 
 **Test Results**:
@@ -188,16 +188,3 @@ python src/ft_model/ft_rwgs_reactor_corrected.py
 - Temperature: 523.15 K (250°C)
 - Pressure: 20 bar
 - Catalyst mass: 5 kg
-
-## Documentation
-
-Comprehensive stoichiometry audit and verification documentation:
-
-| Document | Purpose |
-|----------|---------|
-| [STOICHIOMETRY_DOCUMENTATION_INDEX.md](STOICHIOMETRY_DOCUMENTATION_INDEX.md) | Master index and navigation guide |
-| [STOICHIOMETRY_AUDIT_REPORT.md](STOICHIOMETRY_AUDIT_REPORT.md) | Technical details of all corrections |
-| [STOICHIOMETRY_QUICK_REFERENCE.md](STOICHIOMETRY_QUICK_REFERENCE.md) | Before/after stoichiometry comparison |
-| [ATOM_BALANCE_VERIFICATION_GUIDE.md](ATOM_BALANCE_VERIFICATION_GUIDE.md) | Implementation guide for extensions |
-| [STOICHIOMETRY_AUDIT_SUMMARY.md](STOICHIOMETRY_AUDIT_SUMMARY.md) | Executive summary |
-| [COMPLETION_REPORT.md](COMPLETION_REPORT.md) | Final completion status |
