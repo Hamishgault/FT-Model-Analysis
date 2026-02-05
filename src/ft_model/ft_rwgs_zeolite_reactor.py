@@ -58,10 +58,10 @@ ATOMIC_COMPOSITION = {
     'H2O': {'C': 0, 'H': 2, 'O': 1},
     # Hydrocarbon lumps
     'C1': {'C': 1, 'H': 4, 'O': 0},          # CH4
-    'C2_C4': {'C': 4, 'H': 8, 'O': 0},       # C4H8 (olefin lump)
-    'C5_C12': {'C': 8, 'H': 16, 'O': 0},     # C8H16 (distillate lump)
-    'C13_plus': {'C': 16, 'H': 32, 'O': 0},  # C16H32 (wax lump)
-    'iso_C5_C12': {'C': 8, 'H': 16, 'O': 0},
+    'C2_C4': {'C': 4, 'H': 8, 'O': 0},           # C4H8 (olefin lump)
+    'C5_C12': {'C': 6.05, 'H': 12.36, 'O': 0},   # C6.05H12.36 (gasoline-range lump)
+    'C13_plus': {'C': 12.10, 'H': 24.72, 'O': 0},  # 2*C5-C12 (consistent wax lump)
+    'iso_C5_C12': {'C': 6.05, 'H': 12.36, 'O': 0},
     'aromatics': {'C': 8, 'H': 10, 'O': 0},
     'coke': {'C': 1, 'H': 0, 'O': 0},
 }
@@ -144,12 +144,12 @@ C2_C4_STOICHIOMETRY = {
     'coke': 0.0,
 }
 
-# C5-C12 formation: 8CO + 16H2 -> C8H16 + 8H2O
+# C5-C12 (gasoline-range) formation: 6.05CO + 12.23H2 -> C6.05H12.36 + 6.05H2O
 C5_C12_STOICHIOMETRY = {
     'CO2': 0.0,
-    'H2': -16.0,
-    'CO': -8.0,
-    'H2O': 8.0,
+    'H2': -12.23,
+    'CO': -6.05,
+    'H2O': 6.05,
     'C1': 0.0,
     'C2_C4': 0.0,
     'C5_C12': 1.0,
@@ -159,12 +159,12 @@ C5_C12_STOICHIOMETRY = {
     'coke': 0.0,
 }
 
-# C13+ formation: 16CO + 32H2 -> C16H32 + 16H2O
+# C13+ formation: 12.10CO + 24.46H2 -> C12.10H24.72 + 12.10H2O
 C13_PLUS_STOICHIOMETRY = {
     'CO2': 0.0,
-    'H2': -32.0,
-    'CO': -16.0,
-    'H2O': 16.0,
+    'H2': -24.46,
+    'CO': -12.10,
+    'H2O': 12.10,
     'C1': 0.0,
     'C2_C4': 0.0,
     'C5_C12': 0.0,
@@ -177,7 +177,7 @@ C13_PLUS_STOICHIOMETRY = {
 
 # ==================== ZEOLITE REACTION STOICHIOMETRIES ====================
 
-# Wax cracking: C16H32 -> 2*C8H16
+# Wax cracking: C12.10H24.72 -> 2*C6.05H12.36
 CRACKING_STOICHIOMETRY = {
     'CO2': 0.0,
     'H2': 0.0,
@@ -192,14 +192,14 @@ CRACKING_STOICHIOMETRY = {
     'coke': 0.0,
 }
 
-# Light cracking: C8H16 -> 2*C4H8
+# Light cracking: C6.05H12.36 -> 1.5125*C4H8 + 0.13*H2
 LIGHT_CRACKING_STOICHIOMETRY = {
     'CO2': 0.0,
     'CO': 0.0,
     'H2O': 0.0,
-    'H2': 0.0,
+    'H2': 0.13,
     'C1': 0.0,
-    'C2_C4': 2.0,
+    'C2_C4': 1.5125,
     'C5_C12': -1.0,
     'C13_plus': 0.0,
     'iso_C5_C12': 0.0,
@@ -207,7 +207,7 @@ LIGHT_CRACKING_STOICHIOMETRY = {
     'coke': 0.0,
 }
 
-# Isomerization: C8H16 -> iso-C8H16
+# Isomerization: C6.05H12.36 -> iso-C6.05H12.36
 ISOMERIZATION_STOICHIOMETRY = {
     'CO2': 0.0,
     'CO': 0.0,
@@ -222,14 +222,14 @@ ISOMERIZATION_STOICHIOMETRY = {
     'coke': 0.0,
 }
 
-# Oligomerization: 2*C4H8 -> C8H16
+# Oligomerization: 1.5125*C4H8 + 0.13*H2 -> C6.05H12.36
 OLIGOMERIZATION_STOICHIOMETRY = {
     'CO2': 0.0,
-    'H2': 0.0,
+    'H2': -0.13,
     'CO': 0.0,
     'H2O': 0.0,
     'C1': 0.0,
-    'C2_C4': -2.0,
+    'C2_C4': -1.5125,
     'C5_C12': 1.0,
     'C13_plus': 0.0,
     'iso_C5_C12': 0.0,
@@ -391,6 +391,14 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='Enable effectiveness factors for mass transfer limits (default=False)',
         ),
     )
+    CONFIG.declare(
+        'kinetics_model',
+        ConfigValue(
+            default='lumped_simple',
+            domain=str,
+            doc='FT kinetics model: lumped_simple or marvast_2005',
+        ),
+    )
 
     def build(self):
         """
@@ -471,6 +479,72 @@ class FTRWGSReactorData(UnitModelBlockData):
             mutable=True,
             doc='C13+ formation rate constant',
         )
+
+        # ==================== RWGS+FTS (2017) KINETICS PARAMETERS ====================
+        # r_CDH = k_FTS(T) * P_H2 / (1 + a * P_H2O / (P_CO2 * P_H2)), a = b(T) * k_p
+        self.kfts_ref = pyo.Param(
+            initialize=6.4e-4,
+            mutable=True,
+            doc='k_FTS at reference T [mol/(g_cat*h*bar)]',
+        )
+        self.E_app = pyo.Param(
+            initialize=23000.0,
+            mutable=True,
+            doc='Apparent activation energy [J/mol]',
+        )
+        self.b_ref = pyo.Param(
+            initialize=1.6e-2,
+            mutable=True,
+            doc='b parameter at reference T [1/bar]',
+        )
+        self.dH_b = pyo.Param(
+            initialize=-28500.0,
+            mutable=True,
+            doc='Adsorption enthalpy for b [J/mol]',
+        )
+        self.T_ref_kin = pyo.Param(
+            initialize=543.0,
+            mutable=True,
+            doc='Reference temperature for k_FTS and b [K]',
+        )
+
+        # ==================== MARVAST 2005 FT KINETICS PARAMETERS ====================
+        # Rj = k0 * exp(-E/RT) * P_CO^m * P_H2^n
+        # Defaults from Marvast et al. (Chem Eng Technol, 2005)
+        self.m_c1 = pyo.Param(initialize=-1.0889, mutable=True, doc='C1 m exponent')
+        self.n_c1 = pyo.Param(initialize=1.5662, mutable=True, doc='C1 n exponent')
+        self.k0_c1 = pyo.Param(initialize=142583.8, mutable=True, doc='C1 pre-exponential')
+        self.E_c1 = pyo.Param(initialize=83423.9, mutable=True, doc='C1 activation energy [J/mol]')
+
+        self.m_c2h4 = pyo.Param(initialize=0.7622, mutable=True, doc='C2H4 m exponent')
+        self.n_c2h4 = pyo.Param(initialize=0.0728, mutable=True, doc='C2H4 n exponent')
+        self.k0_c2h4 = pyo.Param(initialize=51.556, mutable=True, doc='C2H4 pre-exponential')
+        self.E_c2h4 = pyo.Param(initialize=65018.0, mutable=True, doc='C2H4 activation energy [J/mol]')
+
+        self.m_c2h6 = pyo.Param(initialize=-0.5645, mutable=True, doc='C2H6 m exponent')
+        self.n_c2h6 = pyo.Param(initialize=1.3155, mutable=True, doc='C2H6 n exponent')
+        self.k0_c2h6 = pyo.Param(initialize=24.717, mutable=True, doc='C2H6 pre-exponential')
+        self.E_c2h6 = pyo.Param(initialize=49782.0, mutable=True, doc='C2H6 activation energy [J/mol]')
+
+        self.m_c3h8 = pyo.Param(initialize=0.4051, mutable=True, doc='C3H8 m exponent')
+        self.n_c3h8 = pyo.Param(initialize=0.6635, mutable=True, doc='C3H8 n exponent')
+        self.k0_c3h8 = pyo.Param(initialize=0.4632, mutable=True, doc='C3H8 pre-exponential')
+        self.E_c3h8 = pyo.Param(initialize=34885.5, mutable=True, doc='C3H8 activation energy [J/mol]')
+
+        self.m_nc4h10 = pyo.Param(initialize=0.4728, mutable=True, doc='n-C4H10 m exponent')
+        self.n_nc4h10 = pyo.Param(initialize=1.1389, mutable=True, doc='n-C4H10 n exponent')
+        self.k0_nc4h10 = pyo.Param(initialize=0.00474, mutable=True, doc='n-C4H10 pre-exponential')
+        self.E_nc4h10 = pyo.Param(initialize=27728.9, mutable=True, doc='n-C4H10 activation energy [J/mol]')
+
+        self.m_ic4h10 = pyo.Param(initialize=0.8204, mutable=True, doc='i-C4H10 m exponent')
+        self.n_ic4h10 = pyo.Param(initialize=0.5026, mutable=True, doc='i-C4H10 n exponent')
+        self.k0_ic4h10 = pyo.Param(initialize=0.00832, mutable=True, doc='i-C4H10 pre-exponential')
+        self.E_ic4h10 = pyo.Param(initialize=25730.1, mutable=True, doc='i-C4H10 activation energy [J/mol]')
+
+        self.m_c5_c12 = pyo.Param(initialize=0.5850, mutable=True, doc='C5-C12 m exponent (C6.05H12.36)')
+        self.n_c5_c12 = pyo.Param(initialize=0.5982, mutable=True, doc='C5-C12 n exponent (C6.05H12.36)')
+        self.k0_c5_c12 = pyo.Param(initialize=0.02316, mutable=True, doc='C5-C12 pre-exponential (C6.05H12.36)')
+        self.E_c5_c12 = pyo.Param(initialize=23564.3, mutable=True, doc='C5-C12 activation energy [J/mol]')
 
         self.dp_dw = pyo.Param(
             initialize=0.0,
@@ -594,6 +668,37 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='Coke formation rate constant [kmol/(kg_cat·s)]',
         )
 
+        self.beta_gasoline = pyo.Param(
+            initialize=1.0,
+            mutable=True,
+            doc='Cracking degree for gasoline-range [-]',
+        )
+        self.beta_jet = pyo.Param(
+            initialize=1.0,
+            mutable=True,
+            doc='Cracking degree for jet-range [-]',
+        )
+        self.beta_diesel = pyo.Param(
+            initialize=1.0,
+            mutable=True,
+            doc='Cracking degree for diesel-range [-]',
+        )
+        self.split_c5_gasoline = pyo.Param(
+            initialize=0.5,
+            mutable=True,
+            doc='Fraction of C5_C12 treated as gasoline-range [-]',
+        )
+        self.split_c5_jet = pyo.Param(
+            initialize=0.5,
+            mutable=True,
+            doc='Fraction of C5_C12 treated as jet-range [-]',
+        )
+        self.split_c13_diesel = pyo.Param(
+            initialize=0.7,
+            mutable=True,
+            doc='Fraction of C13_plus treated as diesel-range [-]',
+        )
+
         # ==================== STATE VARIABLES ====================
 
         self.flow_mol_comp = pyo.Var(
@@ -643,6 +748,26 @@ class FTRWGSReactorData(UnitModelBlockData):
             self.component_list,
             rule=lambda b, t, w, c: b.mole_frac[t, w, c] * b.pressure[t, w],
             doc='Partial pressures [Pa]',
+        )
+
+        self.flow_gasoline = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: b.split_c5_gasoline * b.flow_mol_comp[t, w, 'C5_C12']
+            + b.flow_mol_comp[t, w, 'iso_C5_C12'],
+            doc='Gasoline-range flow [kmol/s] (mapped from C5_C12 and iso_C5_C12)',
+        )
+        self.flow_jet = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: b.split_c5_jet * b.flow_mol_comp[t, w, 'C5_C12'],
+            doc='Jet-range flow [kmol/s] (mapped from C5_C12)',
+        )
+        self.flow_diesel = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: b.split_c13_diesel * b.flow_mol_comp[t, w, 'C13_plus'],
+            doc='Diesel-range flow [kmol/s] (mapped from C13_plus)',
         )
 
         # ==================== THERMODYNAMICS (PLACEHOLDER PROPERTY BLOCK) ====================
@@ -936,10 +1061,10 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='RWGS reaction rate',
         )
         def rate_rwgs_eq(b, t, w):
-            p_CO2 = b.partial_pressure[t, w, 'CO2'] / 1e5
-            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
-            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
-            p_H2O = b.partial_pressure[t, w, 'H2O'] / 1e5
+            p_CO2 = b.partial_pressure[t, w, 'CO2'] / 1e5 + 1e-6
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5 + 1e-6
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5 + 1e-6
+            p_H2O = b.partial_pressure[t, w, 'H2O'] / 1e5 + 1e-6
             
             forward = p_CO2 * p_H2
             reverse = p_CO * p_H2O / b.Keq_rwgs
@@ -954,8 +1079,15 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='C1 formation rate (simplified power-law)',
         )
         def rate_c1_eq(b, t, w):
-            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
-            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5 + 1e-6
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5 + 1e-6
+            if b.config.kinetics_model == 'marvast_2005':
+                p_CO_safe = p_CO + 1e-6
+                p_H2_safe = p_H2 + 1e-6
+                k_T = b.k0_c1 * pyo.exp(-b.E_c1 / (8.314 * b.temperature[t, w]))
+                return b.rate_c1[t, w] == b.rate_multiplier * k_T * p_CO_safe**b.m_c1 * p_H2_safe**b.n_c1
+            if b.config.kinetics_model == 'rwgs_2017':
+                return b.rate_c1[t, w] == 0.0
             return b.rate_c1[t, w] == b.rate_multiplier * b.k_c1 * p_CO * p_H2
         
         # C2-C4 formation rate: r = k * p_CO * p_H2
@@ -965,8 +1097,26 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='C2-C4 formation rate (simplified power-law)',
         )
         def rate_c2_c4_eq(b, t, w):
-            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
-            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5 + 1e-6
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5 + 1e-6
+            if b.config.kinetics_model == 'marvast_2005':
+                p_CO_safe = p_CO + 1e-6
+                p_H2_safe = p_H2 + 1e-6
+                k_c2h4 = b.k0_c2h4 * pyo.exp(-b.E_c2h4 / (8.314 * b.temperature[t, w]))
+                k_c2h6 = b.k0_c2h6 * pyo.exp(-b.E_c2h6 / (8.314 * b.temperature[t, w]))
+                k_c3h8 = b.k0_c3h8 * pyo.exp(-b.E_c3h8 / (8.314 * b.temperature[t, w]))
+                k_nc4 = b.k0_nc4h10 * pyo.exp(-b.E_nc4h10 / (8.314 * b.temperature[t, w]))
+                k_ic4 = b.k0_ic4h10 * pyo.exp(-b.E_ic4h10 / (8.314 * b.temperature[t, w]))
+                rate_sum = (
+                    k_c2h4 * p_CO_safe**b.m_c2h4 * p_H2_safe**b.n_c2h4
+                    + k_c2h6 * p_CO_safe**b.m_c2h6 * p_H2_safe**b.n_c2h6
+                    + k_c3h8 * p_CO_safe**b.m_c3h8 * p_H2_safe**b.n_c3h8
+                    + k_nc4 * p_CO_safe**b.m_nc4h10 * p_H2_safe**b.n_nc4h10
+                    + k_ic4 * p_CO_safe**b.m_ic4h10 * p_H2_safe**b.n_ic4h10
+                )
+                return b.rate_c2_c4[t, w] == b.rate_multiplier * rate_sum
+            if b.config.kinetics_model == 'rwgs_2017':
+                return b.rate_c2_c4[t, w] == 0.0
             return b.rate_c2_c4[t, w] == b.rate_multiplier * b.k_c2_c4 * p_CO * p_H2
         
         # C5-C12 formation rate: r = k * p_CO * p_H2
@@ -976,8 +1126,32 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='C5-C12 formation rate (simplified power-law)',
         )
         def rate_c5_c12_eq(b, t, w):
-            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
-            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5 + 1e-6
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5 + 1e-6
+            p_CO2 = b.partial_pressure[t, w, 'CO2'] / 1e5 + 1e-6
+            p_H2O = b.partial_pressure[t, w, 'H2O'] / 1e5 + 1e-6
+            if b.config.kinetics_model == 'marvast_2005':
+                p_CO_safe = p_CO + 1e-6
+                p_H2_safe = p_H2 + 1e-6
+                k_T = b.k0_c5_c12 * pyo.exp(-b.E_c5_c12 / (8.314 * b.temperature[t, w]))
+                return b.rate_c5_c12[t, w] == b.rate_multiplier * k_T * p_CO_safe**b.m_c5_c12 * p_H2_safe**b.n_c5_c12
+            if b.config.kinetics_model == 'rwgs_2017':
+                p_CO_safe = p_CO + 1e-6
+                p_CO2_safe = p_CO2 + 1e-6
+                p_H2_safe = p_H2 + 1e-6
+                p_H2O_safe = p_H2O + 1e-6
+
+                log10_kp = 2073.0 / b.temperature[t, w] - 2.029
+                Kp = 10 ** log10_kp
+                q = (p_CO2_safe * p_H2_safe) / (Kp * p_H2O_safe * p_CO_safe)
+                r_param = 1.0 / (q + 1e-12)
+                k_p = r_param * Kp
+
+                kfts_T = b.kfts_ref * pyo.exp(-b.E_app / 8.314 * (1.0 / b.temperature[t, w] - 1.0 / b.T_ref_kin))
+                b_T = b.b_ref * pyo.exp(-b.dH_b / 8.314 * (1.0 / b.temperature[t, w] - 1.0 / b.T_ref_kin))
+                a = b_T * k_p
+                denom = 1.0 + a * p_H2O_safe / (p_CO2_safe * p_H2_safe)
+                return b.rate_c5_c12[t, w] == b.rate_multiplier * kfts_T * p_H2_safe / denom
             return b.rate_c5_c12[t, w] == b.rate_multiplier * b.k_c5_c12 * p_CO * p_H2
 
         # C13+ formation rate: r = k * p_CO * p_H2
@@ -987,8 +1161,12 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='C13+ formation rate (simplified power-law)',
         )
         def rate_c13_plus_eq(b, t, w):
-            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
-            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5 + 1e-6
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5 + 1e-6
+            if b.config.kinetics_model == 'marvast_2005':
+                return b.rate_c13_plus[t, w] == 0.0
+            if b.config.kinetics_model == 'rwgs_2017':
+                return b.rate_c13_plus[t, w] == 0.0
             return b.rate_c13_plus[t, w] == b.rate_multiplier * b.k_c13_plus * p_CO * p_H2
         
         # ==================== ZEOLITE RATE EXPRESSIONS ====================
@@ -1003,7 +1181,7 @@ class FTRWGSReactorData(UnitModelBlockData):
             )
             def rate_cracking_eq(b, t, w):
                 y_c13 = b.mole_frac[t, w, 'C13_plus']
-                return b.rate_cracking[t, w] == b.rate_multiplier * b.k_cracking * y_c13
+                return b.rate_cracking[t, w] == b.rate_multiplier * b.k_cracking * b.beta_diesel * y_c13
 
             # Light cracking: r = k * C5_C12 mole fraction
             @self.Constraint(
@@ -1013,7 +1191,8 @@ class FTRWGSReactorData(UnitModelBlockData):
             )
             def rate_light_cracking_eq(b, t, w):
                 y_c5 = b.mole_frac[t, w, 'C5_C12']
-                return b.rate_light_cracking[t, w] == b.rate_multiplier * b.k_light_cracking * y_c5
+                beta_c5 = b.beta_gasoline * b.split_c5_gasoline + b.beta_jet * b.split_c5_jet
+                return b.rate_light_cracking[t, w] == b.rate_multiplier * b.k_light_cracking * beta_c5 * y_c5
 
             # Isomerization: r = k * C5_C12 mole fraction
             @self.Constraint(
@@ -1107,7 +1286,7 @@ class FTRWGSReactorData(UnitModelBlockData):
             eta_ft = b.eta_ft if b.config.mass_transfer else 1.0
             eta_zeo = b.eta_zeolite if b.config.mass_transfer else 1.0
 
-            return b.dF_dW[t, w, c] == eta_ft * ft_term + eta_zeo * zeo_term
+            return b.dF_dW[t, w, c] == b.W_total * (eta_ft * ft_term + eta_zeo * zeo_term)
 
         # ==================== SCALING FACTORS ====================
         iscale.set_scaling_factor(self.flow_mol_comp, 1.0)
@@ -1186,7 +1365,7 @@ class FTRWGSReactorData(UnitModelBlockData):
                     for c in b.component_list
                 ) + b.flow_mol_total[t, w] * b.props[t, w].cp_mol * b.dT_dW[t, w]
 
-                rhs = -sum(
+                rhs = -b.W_total * sum(
                     b.dH_rxn[t, w, r] * b.reaction_rate[r][t, w]
                     for r in b.reaction_stoich.keys()
                 )
@@ -1214,6 +1393,17 @@ class FTRWGSReactorData(UnitModelBlockData):
         k_oligomerization: Optional[float] = None,
         k_aromatization: Optional[float] = None,
         k_coke_formation: Optional[float] = None,
+        kfts_ref: Optional[float] = None,
+        E_app: Optional[float] = None,
+        b_ref: Optional[float] = None,
+        dH_b: Optional[float] = None,
+        T_ref: Optional[float] = None,
+        beta_gasoline: Optional[float] = None,
+        beta_jet: Optional[float] = None,
+        beta_diesel: Optional[float] = None,
+        split_c5_gasoline: Optional[float] = None,
+        split_c5_jet: Optional[float] = None,
+        split_c13_diesel: Optional[float] = None,
         dp_dw: Optional[float] = None,
         ergun_porosity: Optional[float] = None,
         particle_diameter: Optional[float] = None,
@@ -1259,6 +1449,28 @@ class FTRWGSReactorData(UnitModelBlockData):
             self.k_aromatization.set_value(k_aromatization)
         if k_coke_formation is not None:
             self.k_coke_formation.set_value(k_coke_formation)
+        if kfts_ref is not None:
+            self.kfts_ref.set_value(kfts_ref)
+        if E_app is not None:
+            self.E_app.set_value(E_app)
+        if b_ref is not None:
+            self.b_ref.set_value(b_ref)
+        if dH_b is not None:
+            self.dH_b.set_value(dH_b)
+        if T_ref is not None:
+            self.T_ref_kin.set_value(T_ref)
+        if beta_gasoline is not None:
+            self.beta_gasoline.set_value(beta_gasoline)
+        if beta_jet is not None:
+            self.beta_jet.set_value(beta_jet)
+        if beta_diesel is not None:
+            self.beta_diesel.set_value(beta_diesel)
+        if split_c5_gasoline is not None:
+            self.split_c5_gasoline.set_value(split_c5_gasoline)
+        if split_c5_jet is not None:
+            self.split_c5_jet.set_value(split_c5_jet)
+        if split_c13_diesel is not None:
+            self.split_c13_diesel.set_value(split_c13_diesel)
         if dp_dw is not None:
             self.dp_dw.set_value(dp_dw)
         if ergun_porosity is not None:
@@ -1342,17 +1554,66 @@ class FTRWGSReactorData(UnitModelBlockData):
                 comp: self.flow_mol_comp[t, w, comp].value / total_flow
                 for comp in self.component_list
             }
-            p = {comp: y[comp] * pressure_w / 1e5 for comp in self.component_list}
+            p = {comp: y[comp] * pressure_w / 1e5 + 1e-6 for comp in self.component_list}
 
             self.rate_rwgs[t, w].set_value(
                 rate_mult * self.k_rwgs.value * (
                     p['CO2'] * p['H2'] - p['CO'] * p['H2O'] / self.Keq_rwgs.value
                 )
             )
-            self.rate_c1[t, w].set_value(rate_mult * self.k_c1.value * p['CO'] * p['H2'])
-            self.rate_c2_c4[t, w].set_value(rate_mult * self.k_c2_c4.value * p['CO'] * p['H2'])
-            self.rate_c5_c12[t, w].set_value(rate_mult * self.k_c5_c12.value * p['CO'] * p['H2'])
-            self.rate_c13_plus[t, w].set_value(rate_mult * self.k_c13_plus.value * p['CO'] * p['H2'])
+            if self.config.kinetics_model == 'marvast_2005':
+                p_co_safe = p['CO'] + 1e-8
+                p_h2_safe = p['H2'] + 1e-8
+                k_c1 = self.k0_c1.value * pyo.exp(-self.E_c1.value / (8.314 * self.temperature[t, w].value))
+                k_c2h4 = self.k0_c2h4.value * pyo.exp(-self.E_c2h4.value / (8.314 * self.temperature[t, w].value))
+                k_c2h6 = self.k0_c2h6.value * pyo.exp(-self.E_c2h6.value / (8.314 * self.temperature[t, w].value))
+                k_c3h8 = self.k0_c3h8.value * pyo.exp(-self.E_c3h8.value / (8.314 * self.temperature[t, w].value))
+                k_nc4 = self.k0_nc4h10.value * pyo.exp(-self.E_nc4h10.value / (8.314 * self.temperature[t, w].value))
+                k_ic4 = self.k0_ic4h10.value * pyo.exp(-self.E_ic4h10.value / (8.314 * self.temperature[t, w].value))
+                k_c5 = self.k0_c5_c12.value * pyo.exp(-self.E_c5_c12.value / (8.314 * self.temperature[t, w].value))
+
+                self.rate_c1[t, w].set_value(
+                    rate_mult * k_c1 * p_co_safe**self.m_c1.value * p_h2_safe**self.n_c1.value
+                )
+                self.rate_c2_c4[t, w].set_value(
+                    rate_mult * (
+                        k_c2h4 * p_co_safe**self.m_c2h4.value * p_h2_safe**self.n_c2h4.value
+                        + k_c2h6 * p_co_safe**self.m_c2h6.value * p_h2_safe**self.n_c2h6.value
+                        + k_c3h8 * p_co_safe**self.m_c3h8.value * p_h2_safe**self.n_c3h8.value
+                        + k_nc4 * p_co_safe**self.m_nc4h10.value * p_h2_safe**self.n_nc4h10.value
+                        + k_ic4 * p_co_safe**self.m_ic4h10.value * p_h2_safe**self.n_ic4h10.value
+                    )
+                )
+                self.rate_c5_c12[t, w].set_value(
+                    rate_mult * k_c5 * p_co_safe**self.m_c5_c12.value * p_h2_safe**self.n_c5_c12.value
+                )
+                self.rate_c13_plus[t, w].set_value(0.0)
+            elif self.config.kinetics_model == 'rwgs_2017':
+                p_co2 = p['CO2'] + 1e-12
+                p_h2 = p['H2'] + 1e-12
+                p_co = p['CO'] + 1e-12
+                p_h2o = p['H2O'] + 1e-12
+
+                log10_kp = 2073.0 / self.temperature[t, w].value - 2.029
+                Kp = 10 ** log10_kp
+                q = (p_co2 * p_h2) / (Kp * p_h2o * p_co)
+                r_param = 1.0 / (q + 1e-12)
+                k_p = r_param * Kp
+
+                kfts_T = self.kfts_ref.value * pyo.exp(-self.E_app.value / 8.314 * (1.0 / self.temperature[t, w].value - 1.0 / self.T_ref_kin.value))
+                b_T = self.b_ref.value * pyo.exp(-self.dH_b.value / 8.314 * (1.0 / self.temperature[t, w].value - 1.0 / self.T_ref_kin.value))
+                a = b_T * k_p
+                denom = 1.0 + a * p_h2o / (p_co2 * p_h2)
+
+                self.rate_c1[t, w].set_value(0.0)
+                self.rate_c2_c4[t, w].set_value(0.0)
+                self.rate_c5_c12[t, w].set_value(rate_mult * kfts_T * p_h2 / denom)
+                self.rate_c13_plus[t, w].set_value(0.0)
+            else:
+                self.rate_c1[t, w].set_value(rate_mult * self.k_c1.value * p['CO'] * p['H2'])
+                self.rate_c2_c4[t, w].set_value(rate_mult * self.k_c2_c4.value * p['CO'] * p['H2'])
+                self.rate_c5_c12[t, w].set_value(rate_mult * self.k_c5_c12.value * p['CO'] * p['H2'])
+                self.rate_c13_plus[t, w].set_value(rate_mult * self.k_c13_plus.value * p['CO'] * p['H2'])
 
             if self.config.include_zeolite_reactions:
                 self.rate_cracking[t, w].set_value(rate_mult * self.k_cracking.value * y['C13_plus'])
@@ -1380,7 +1641,7 @@ class FTRWGSReactorData(UnitModelBlockData):
                         ZEOLITE_REACTIONS[r].get(comp, 0.0) * self.reaction_rate[r][t, w].value
                         for r in ZEOLITE_REACTIONS
                     )
-                self.dF_dW[t, w, comp].set_value(eta_ft * ft_term + eta_zeo * zeo_term)
+                self.dF_dW[t, w, comp].set_value(self.W_total.value * (eta_ft * ft_term + eta_zeo * zeo_term))
 
         print("[OK] Reactor initialized successfully")
         print(
@@ -1557,6 +1818,7 @@ def run_single_simulation(sim_config: Dict[str, float], inlet_flow: Dict[str, fl
         ergun_pressure_drop=bool(sim_config['ergun_pressure_drop']),
         heat_transfer=bool(sim_config['heat_transfer']),
         mass_transfer=bool(sim_config['mass_transfer']),
+        kinetics_model=sim_config.get('kinetics_model', 'lumped_simple'),
     )
 
     m.fs.reactor.initialize(
@@ -1576,6 +1838,17 @@ def run_single_simulation(sim_config: Dict[str, float], inlet_flow: Dict[str, fl
         k_oligomerization=sim_config['k_oligomerization'],
         k_aromatization=sim_config['k_aromatization'],
         k_coke_formation=sim_config['k_coke_formation'],
+        kfts_ref=sim_config.get('kfts_ref'),
+        E_app=sim_config.get('E_app'),
+        b_ref=sim_config.get('b_ref'),
+        dH_b=sim_config.get('dH_b'),
+        T_ref=sim_config.get('T_ref'),
+        beta_gasoline=sim_config.get('beta_gasoline'),
+        beta_jet=sim_config.get('beta_jet'),
+        beta_diesel=sim_config.get('beta_diesel'),
+        split_c5_gasoline=sim_config.get('split_c5_gasoline'),
+        split_c5_jet=sim_config.get('split_c5_jet'),
+        split_c13_diesel=sim_config.get('split_c13_diesel'),
         dp_dw=sim_config['dp_dw'],
         ergun_porosity=sim_config['ergun_porosity'],
         particle_diameter=sim_config['particle_diameter'],

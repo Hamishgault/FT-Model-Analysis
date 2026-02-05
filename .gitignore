@@ -52,4 +52,6 @@ htmlcov/
 data/
 output/
 results/
+examples/outputs/
+research_assets/
 *.log
