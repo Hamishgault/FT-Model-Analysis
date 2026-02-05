@@ -1,8 +1,7 @@
 """
-Fischer-Tropsch (FT) Reactor Models and Kinetics
+Fischer-Tropsch (FT) main reactor model
 """
 
-from . import kinetics
-from . import reactor
+from .ft_rwgs_zeolite_reactor import FTRWGSReactor, run_single_simulation
 
-__all__ = ['kinetics', 'reactor']
+__all__ = ['FTRWGSReactor', 'run_single_simulation']

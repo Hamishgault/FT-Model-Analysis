@@ -12,27 +12,40 @@ CORRECTED Reactions (atom-balanced):
 
 FT Synthesis:
 1. RWGS:    CO2 + H2   <-> CO   + H2O
-2. CH4:     CO  + 3H2  -> CH4  + H2O        (CORRECTED: was CO + 2H2)
-3. C2H4:   2CO  + 4H2  -> C2H4 + 2H2O      (CORRECTED: was CO + 2H2)
-4. C5+:    5CO  + 10H2 -> C5H10 + 5H2O     (CORRECTED: was CO + 2H2)
+2. C1:      CO  + 3H2  -> C1    + H2O
+3. C2-C4:   4CO + 8H2  -> C2-C4 + 4H2O
+4. C5-C12:  8CO + 16H2 -> C5-C12 + 8H2O
+5. C13+:   16CO + 32H2 -> C13+  + 16H2O
 
 Zeolite Upgrading (optional, enable with config flag):
-5. Wax Cracking:        C5plus -> distillate + LPG + H2
+6. Cracking:          C13+ -> 2*C5-C12
+7. Light Cracking:    C5-C12 -> 2*C2-C4
+8. Isomerization:     C5-C12 -> iso-C5-C12
+9. Oligomerization:   2*C2-C4 -> C5-C12
+10. Aromatization:    2*C2-C4 -> aromatics + 3H2
+11. Coke Formation:   aromatics -> coke + H2
 """
 
 # type: ignore  # Pyomo/IDAES type hints not fully recognized by Pylance
 
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
 import pyomo.environ as pyo
 from pyomo.dae import ContinuousSet, DerivativeVar
-from pyomo.environ import TransformationFactory, value
+from pyomo.environ import ConcreteModel, SolverFactory, TerminationCondition, TransformationFactory, value
 from pyomo.common.config import ConfigValue
 
 from idaes.core import (
+    FlowsheetBlock,
+    UnitModelBlock,
     UnitModelBlockData,
     declare_process_block_class,
 )
+from idaes.core.util import scaling as iscale
+
+if TYPE_CHECKING:
+    class FTRWGSReactor(UnitModelBlock):
+        pass
 
 
 # ==================== ATOMIC COMPOSITION ====================
@@ -43,13 +56,12 @@ ATOMIC_COMPOSITION = {
     'H2': {'C': 0, 'H': 2, 'O': 0},
     'CO': {'C': 1, 'H': 0, 'O': 1},
     'H2O': {'C': 0, 'H': 2, 'O': 1},
-    'CH4': {'C': 1, 'H': 4, 'O': 0},
-    'C2H4': {'C': 2, 'H': 4, 'O': 0},
-    'C5plus': {'C': 5, 'H': 10, 'O': 0},
-    # Zeolite lumps
-    'distillate': {'C': 12, 'H': 24, 'O': 0},
-    'LPG': {'C': 4, 'H': 10, 'O': 0},
-    'naphtha': {'C': 8, 'H': 16, 'O': 0},
+    # Hydrocarbon lumps
+    'C1': {'C': 1, 'H': 4, 'O': 0},          # CH4
+    'C2_C4': {'C': 4, 'H': 8, 'O': 0},       # C4H8 (olefin lump)
+    'C5_C12': {'C': 8, 'H': 16, 'O': 0},     # C8H16 (distillate lump)
+    'C13_plus': {'C': 16, 'H': 32, 'O': 0},  # C16H32 (wax lump)
+    'iso_C5_C12': {'C': 8, 'H': 16, 'O': 0},
     'aromatics': {'C': 8, 'H': 10, 'O': 0},
     'coke': {'C': 1, 'H': 0, 'O': 0},
 }
@@ -93,60 +105,71 @@ RWGS_STOICHIOMETRY = {
     'H2': -1.0,
     'CO': 1.0,
     'H2O': 1.0,
-    'CH4': 0.0,
-    'C2H4': 0.0,
-    'C5plus': 0.0,
-    'distillate': 0.0,
-    'LPG': 0.0,
-    'naphtha': 0.0,
+    'C1': 0.0,
+    'C2_C4': 0.0,
+    'C5_C12': 0.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 0.0,
     'aromatics': 0.0,
     'coke': 0.0,
 }
 
-# CH4 formation: CO + 3H2 -> CH4 + H2O
-CH4_STOICHIOMETRY = {
+# C1 formation: CO + 3H2 -> CH4 + H2O
+C1_STOICHIOMETRY = {
     'CO2': 0.0,
     'H2': -3.0,
     'CO': -1.0,
     'H2O': 1.0,
-    'CH4': 1.0,
-    'C2H4': 0.0,
-    'C5plus': 0.0,
-    'distillate': 0.0,
-    'LPG': 0.0,
-    'naphtha': 0.0,
+    'C1': 1.0,
+    'C2_C4': 0.0,
+    'C5_C12': 0.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 0.0,
     'aromatics': 0.0,
     'coke': 0.0,
 }
 
-# C2H4 formation: 2CO + 4H2 -> C2H4 + 2H2O
-C2H4_STOICHIOMETRY = {
+# C2-C4 formation: 4CO + 8H2 -> C4H8 + 4H2O
+C2_C4_STOICHIOMETRY = {
     'CO2': 0.0,
-    'H2': -4.0,
-    'CO': -2.0,
-    'H2O': 2.0,
-    'CH4': 0.0,
-    'C2H4': 1.0,
-    'C5plus': 0.0,
-    'distillate': 0.0,
-    'LPG': 0.0,
-    'naphtha': 0.0,
+    'H2': -8.0,
+    'CO': -4.0,
+    'H2O': 4.0,
+    'C1': 0.0,
+    'C2_C4': 1.0,
+    'C5_C12': 0.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 0.0,
     'aromatics': 0.0,
     'coke': 0.0,
 }
 
-# C5+ lump formation: 5CO + 10H2 -> C5H10 + 5H2O
-C5PLUS_STOICHIOMETRY = {
+# C5-C12 formation: 8CO + 16H2 -> C8H16 + 8H2O
+C5_C12_STOICHIOMETRY = {
     'CO2': 0.0,
-    'H2': -10.0,
-    'CO': -5.0,
-    'H2O': 5.0,
-    'CH4': 0.0,
-    'C2H4': 0.0,
-    'C5plus': 1.0,
-    'distillate': 0.0,
-    'LPG': 0.0,
-    'naphtha': 0.0,
+    'H2': -16.0,
+    'CO': -8.0,
+    'H2O': 8.0,
+    'C1': 0.0,
+    'C2_C4': 0.0,
+    'C5_C12': 1.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 0.0,
+    'aromatics': 0.0,
+    'coke': 0.0,
+}
+
+# C13+ formation: 16CO + 32H2 -> C16H32 + 16H2O
+C13_PLUS_STOICHIOMETRY = {
+    'CO2': 0.0,
+    'H2': -32.0,
+    'CO': -16.0,
+    'H2O': 16.0,
+    'C1': 0.0,
+    'C2_C4': 0.0,
+    'C5_C12': 0.0,
+    'C13_plus': 1.0,
+    'iso_C5_C12': 0.0,
     'aromatics': 0.0,
     'coke': 0.0,
 }
@@ -154,50 +177,77 @@ C5PLUS_STOICHIOMETRY = {
 
 # ==================== ZEOLITE REACTION STOICHIOMETRIES ====================
 
-# Wax Cracking: C5H10 -> C4H10 (LPG) + C (coke)
-WAX_CRACKING_STOICHIOMETRY = {
+# Wax cracking: C16H32 -> 2*C8H16
+CRACKING_STOICHIOMETRY = {
     'CO2': 0.0,
     'H2': 0.0,
     'CO': 0.0,
     'H2O': 0.0,
-    'CH4': 0.0,
-    'C2H4': 0.0,
-    'C5plus': -1.0,
-    'distillate': 0.0,
-    'LPG': 1.0,
-    'naphtha': 0.0,
-    'aromatics': 0.0,
-    'coke': 1.0,
-}
-
-# Distillate Cracking: C12H24 + H2 -> C8H16 + C4H10
-DISTILLATE_CRACKING_STOICHIOMETRY = {
-    'CO2': 0.0,
-    'H2': -1.0,
-    'CO': 0.0,
-    'H2O': 0.0,
-    'CH4': 0.0,
-    'C2H4': 0.0,
-    'C5plus': 0.0,
-    'distillate': -1.0,
-    'LPG': 1.0,
-    'naphtha': 1.0,
+    'C1': 0.0,
+    'C2_C4': 0.0,
+    'C5_C12': 2.0,
+    'C13_plus': -1.0,
+    'iso_C5_C12': 0.0,
     'aromatics': 0.0,
     'coke': 0.0,
 }
 
-# Olefin Aromatization: 4*C2H4 -> C8H10 + 3*H2
-OLEFIN_AROMATIZATION_STOICHIOMETRY = {
+# Light cracking: C8H16 -> 2*C4H8
+LIGHT_CRACKING_STOICHIOMETRY = {
+    'CO2': 0.0,
+    'CO': 0.0,
+    'H2O': 0.0,
+    'H2': 0.0,
+    'C1': 0.0,
+    'C2_C4': 2.0,
+    'C5_C12': -1.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 0.0,
+    'aromatics': 0.0,
+    'coke': 0.0,
+}
+
+# Isomerization: C8H16 -> iso-C8H16
+ISOMERIZATION_STOICHIOMETRY = {
+    'CO2': 0.0,
+    'CO': 0.0,
+    'H2O': 0.0,
+    'H2': 0.0,
+    'C1': 0.0,
+    'C2_C4': 0.0,
+    'C5_C12': -1.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 1.0,
+    'aromatics': 0.0,
+    'coke': 0.0,
+}
+
+# Oligomerization: 2*C4H8 -> C8H16
+OLIGOMERIZATION_STOICHIOMETRY = {
+    'CO2': 0.0,
+    'H2': 0.0,
+    'CO': 0.0,
+    'H2O': 0.0,
+    'C1': 0.0,
+    'C2_C4': -2.0,
+    'C5_C12': 1.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 0.0,
+    'aromatics': 0.0,
+    'coke': 0.0,
+}
+
+# Aromatization: 2*C4H8 -> C8H10 + 3*H2
+AROMATIZATION_STOICHIOMETRY = {
     'CO2': 0.0,
     'H2': 3.0,
     'CO': 0.0,
     'H2O': 0.0,
-    'CH4': 0.0,
-    'C2H4': -4.0,
-    'C5plus': 0.0,
-    'distillate': 0.0,
-    'LPG': 0.0,
-    'naphtha': 0.0,
+    'C1': 0.0,
+    'C2_C4': -2.0,
+    'C5_C12': 0.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 0.0,
     'aromatics': 1.0,
     'coke': 0.0,
 }
@@ -208,12 +258,11 @@ COKE_FORMATION_STOICHIOMETRY = {
     'H2': 5.0,
     'CO': 0.0,
     'H2O': 0.0,
-    'CH4': 0.0,
-    'C2H4': 0.0,
-    'C5plus': 0.0,
-    'distillate': 0.0,
-    'LPG': 0.0,
-    'naphtha': 0.0,
+    'C1': 0.0,
+    'C2_C4': 0.0,
+    'C5_C12': 0.0,
+    'C13_plus': 0.0,
+    'iso_C5_C12': 0.0,
     'aromatics': -1.0,
     'coke': 8.0,
 }
@@ -222,16 +271,19 @@ COKE_FORMATION_STOICHIOMETRY = {
 # Dictionary of all FT reactions
 FT_REACTIONS = {
     'rwgs': RWGS_STOICHIOMETRY,
-    'ch4': CH4_STOICHIOMETRY,
-    'c2h4': C2H4_STOICHIOMETRY,
-    'c5plus': C5PLUS_STOICHIOMETRY,
+    'c1': C1_STOICHIOMETRY,
+    'c2_c4': C2_C4_STOICHIOMETRY,
+    'c5_c12': C5_C12_STOICHIOMETRY,
+    'c13_plus': C13_PLUS_STOICHIOMETRY,
 }
 
 # Dictionary of all zeolite reactions
 ZEOLITE_REACTIONS = {
-    'wax_cracking': WAX_CRACKING_STOICHIOMETRY,
-    'distillate_cracking': DISTILLATE_CRACKING_STOICHIOMETRY,
-    'olefin_aromatization': OLEFIN_AROMATIZATION_STOICHIOMETRY,
+    'cracking': CRACKING_STOICHIOMETRY,
+    'light_cracking': LIGHT_CRACKING_STOICHIOMETRY,
+    'isomerization': ISOMERIZATION_STOICHIOMETRY,
+    'oligomerization': OLIGOMERIZATION_STOICHIOMETRY,
+    'aromatization': AROMATIZATION_STOICHIOMETRY,
     'coke_formation': COKE_FORMATION_STOICHIOMETRY,
 }
 
@@ -248,14 +300,17 @@ print("="*70)
 try:
     # Verify FT reactions
     check_atom_balance('RWGS', RWGS_STOICHIOMETRY)
-    check_atom_balance('CH4 Formation', CH4_STOICHIOMETRY)
-    check_atom_balance('C2H4 Formation', C2H4_STOICHIOMETRY)
-    check_atom_balance('C5+ Formation', C5PLUS_STOICHIOMETRY)
+    check_atom_balance('C1 Formation', C1_STOICHIOMETRY)
+    check_atom_balance('C2-C4 Formation', C2_C4_STOICHIOMETRY)
+    check_atom_balance('C5-C12 Formation', C5_C12_STOICHIOMETRY)
+    check_atom_balance('C13+ Formation', C13_PLUS_STOICHIOMETRY)
 
     # Verify zeolite reactions
-    check_atom_balance('Wax Cracking', WAX_CRACKING_STOICHIOMETRY)
-    check_atom_balance('Distillate Cracking', DISTILLATE_CRACKING_STOICHIOMETRY)
-    check_atom_balance('Olefin Aromatization', OLEFIN_AROMATIZATION_STOICHIOMETRY)
+    check_atom_balance('Cracking', CRACKING_STOICHIOMETRY)
+    check_atom_balance('Light Cracking', LIGHT_CRACKING_STOICHIOMETRY)
+    check_atom_balance('Isomerization', ISOMERIZATION_STOICHIOMETRY)
+    check_atom_balance('Oligomerization', OLIGOMERIZATION_STOICHIOMETRY)
+    check_atom_balance('Aromatization', AROMATIZATION_STOICHIOMETRY)
     check_atom_balance('Coke Formation', COKE_FORMATION_STOICHIOMETRY)
 
     print("[OK] FT reactions verified: C/H/O atom balance OK")
@@ -273,15 +328,18 @@ class FTRWGSReactorData(UnitModelBlockData):
 
     FT Reactions (all atom-balanced):
     1. RWGS:    CO2 + H2   <-> CO   + H2O
-    2. CH4:     CO  + 3H2  -> CH4  + H2O
-    3. C2H4:   2CO  + 4H2  -> C2H4 + 2H2O
-    4. C5+:    5CO  + 10H2 -> C5H10 + 5H2O
+    2. C1:      CO  + 3H2  -> C1    + H2O
+    3. C2-C4:   4CO + 8H2  -> C2-C4 + 4H2O
+    4. C5-C12:  8CO + 16H2 -> C5-C12 + 8H2O
+    5. C13+:   16CO + 32H2 -> C13+  + 16H2O
 
     Zeolite Upgrading Reactions (optional, enable via config):
-    5. Wax Cracking:           C5plus -> LPG + coke
-    6. Distillate Cracking:    distillate + H2 -> naphtha + LPG
-    7. Olefin Aromatization:   4*C2H4 -> aromatics + H2
-    8. Coke Formation:         aromatics -> coke + H2
+    6. Cracking:          C13+ -> 2*C5-C12
+    7. Light Cracking:    C5-C12 -> 2*C2-C4
+    8. Isomerization:     C5-C12 -> iso-C5-C12
+    9. Oligomerization:   2*C2-C4 -> C5-C12
+    10. Aromatization:    2*C2-C4 -> aromatics + 3H2
+    11. Coke Formation:   aromatics -> coke + H2
     """
 
     CONFIG = UnitModelBlockData.CONFIG()
@@ -293,6 +351,46 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='Enable zeolite upgrading reactions (default=True)',
         ),
     )
+    CONFIG.declare(
+        'energy_balance',
+        ConfigValue(
+            default=False,
+            domain=bool,
+            doc='Enable non-isothermal energy balance (default=False)',
+        ),
+    )
+    CONFIG.declare(
+        'pressure_drop',
+        ConfigValue(
+            default=False,
+            domain=bool,
+            doc='Enable pressure drop along catalyst bed (default=False)',
+        ),
+    )
+    CONFIG.declare(
+        'ergun_pressure_drop',
+        ConfigValue(
+            default=False,
+            domain=bool,
+            doc='Use Ergun equation for pressure drop (default=False)',
+        ),
+    )
+    CONFIG.declare(
+        'heat_transfer',
+        ConfigValue(
+            default=False,
+            domain=bool,
+            doc='Enable heat transfer to coolant/wall (default=False)',
+        ),
+    )
+    CONFIG.declare(
+        'mass_transfer',
+        ConfigValue(
+            default=False,
+            domain=bool,
+            doc='Enable effectiveness factors for mass transfer limits (default=False)',
+        ),
+    )
 
     def build(self):
         """
@@ -302,22 +400,23 @@ class FTRWGSReactorData(UnitModelBlockData):
         """
         super().build()
 
-        # Component list - FT products + zeolite lumps
+        # Component list - RWGS + FT lumps + zeolite products
         self.component_list = [
-            'CO2', 'H2', 'CO', 'H2O',         # RWGS components
-            'CH4', 'C2H4', 'C5plus',         # FT products
-            'distillate', 'LPG', 'naphtha',  # Zeolite upgrades
-            'aromatics', 'coke',              # Zeolite products
+            'CO2', 'H2', 'CO', 'H2O',
+            'C1', 'C2_C4', 'C5_C12', 'C13_plus',
+            'iso_C5_C12', 'aromatics', 'coke',
         ]
         
         # FT reaction list
-        self.ft_reaction_list = ['rwgs', 'ch4', 'c2h4', 'c5plus']
+        self.ft_reaction_list = ['rwgs', 'c1', 'c2_c4', 'c5_c12', 'c13_plus']
         
         # Zeolite reaction list (can be disabled via config)
         self.zeo_reaction_list = [
-            'wax_cracking',
-            'distillate_cracking',
-            'olefin_aromatization',
+            'cracking',
+            'light_cracking',
+            'isomerization',
+            'oligomerization',
+            'aromatization',
             'coke_formation',
         ] if self.config.include_zeolite_reactions else []
 
@@ -345,45 +444,148 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='RWGS equilibrium constant (dimensionless)',
         )
 
-        # CH4 formation rate constant
-        self.k_ch4 = pyo.Param(
+        # C1 formation rate constant
+        self.k_c1 = pyo.Param(
             initialize=0.05,
             mutable=True,
-            doc='CH4 formation rate constant',
+            doc='C1 formation rate constant',
         )
 
-        # C2H4 formation rate constant
-        self.k_c2h4 = pyo.Param(
+        # C2-C4 formation rate constant
+        self.k_c2_c4 = pyo.Param(
             initialize=0.02,
             mutable=True,
-            doc='C2H4 formation rate constant',
+            doc='C2-C4 formation rate constant',
         )
 
-        # C5+ formation rate constant
-        self.k_c5plus = pyo.Param(
+        # C5-C12 formation rate constant
+        self.k_c5_c12 = pyo.Param(
             initialize=0.01,
             mutable=True,
-            doc='C5+ formation rate constant',
+            doc='C5-C12 formation rate constant',
+        )
+
+        # C13+ formation rate constant
+        self.k_c13_plus = pyo.Param(
+            initialize=0.005,
+            mutable=True,
+            doc='C13+ formation rate constant',
+        )
+
+        self.dp_dw = pyo.Param(
+            initialize=0.0,
+            mutable=True,
+            doc='Pressure drop per kg catalyst [Pa/kg]',
+        )
+
+        self.ergun_porosity = pyo.Param(
+            initialize=0.40,
+            mutable=True,
+            doc='Bed void fraction for Ergun equation [-]',
+        )
+        self.particle_diameter = pyo.Param(
+            initialize=2.0e-3,
+            mutable=True,
+            doc='Particle diameter [m]',
+        )
+        self.catalyst_bulk_density = pyo.Param(
+            initialize=1200.0,
+            mutable=True,
+            doc='Catalyst bulk density [kg/m^3]',
+        )
+        self.reactor_diameter = pyo.Param(
+            initialize=0.10,
+            mutable=True,
+            doc='Reactor inner diameter [m]',
+        )
+        self.reactor_length = pyo.Param(
+            initialize=1.0,
+            mutable=True,
+            doc='Reactor length [m]',
+        )
+        self.gas_viscosity = pyo.Param(
+            initialize=2.0e-5,
+            mutable=True,
+            doc='Gas viscosity [Pa*s]',
+        )
+
+        self.ua_per_kg = pyo.Param(
+            initialize=0.0,
+            mutable=True,
+            doc='Overall heat transfer coefficient per kg catalyst [kJ/(s*kg*K)]',
+        )
+        self.T_coolant = pyo.Param(
+            initialize=500.0,
+            mutable=True,
+            doc='Coolant/wall temperature [K]',
+        )
+
+        self.eta_ft = pyo.Param(
+            initialize=1.0,
+            mutable=True,
+            doc='Effectiveness factor for FT/RWGS reactions [-]',
+        )
+        self.eta_zeolite = pyo.Param(
+            initialize=1.0,
+            mutable=True,
+            doc='Effectiveness factor for zeolite reactions [-]',
+        )
+
+        self.R_gas = pyo.Param(
+            initialize=8.314e3,
+            mutable=True,
+            doc='Gas constant [Pa*m^3/(kmol*K)]',
+        )
+
+        self.mw_comp = pyo.Param(
+            self.component_list,
+            initialize={
+                'CO2': 44.01,
+                'H2': 2.016,
+                'CO': 28.01,
+                'H2O': 18.015,
+                'C1': 16.04,
+                'C2_C4': 56.11,
+                'C5_C12': 112.21,
+                'C13_plus': 224.43,
+                'iso_C5_C12': 112.21,
+                'aromatics': 106.17,
+                'coke': 12.01,
+            },
+            mutable=True,
+            doc='Component molecular weights [kg/kmol]',
         )
 
         # ==================== ZEOLITE REACTION PARAMETERS ====================
 
-        self.k_wax_cracking = pyo.Param(
+        self.k_cracking = pyo.Param(
             initialize=0.005,
             mutable=True,
             doc='Wax cracking rate constant [kmol/(kg_cat·s)]',
         )
 
-        self.k_distillate_cracking = pyo.Param(
+        self.k_light_cracking = pyo.Param(
             initialize=0.003,
             mutable=True,
-            doc='Distillate cracking rate constant [kmol/(kg_cat·s)]',
+            doc='Light cracking rate constant [kmol/(kg_cat·s)]',
         )
 
-        self.k_olefin_aromatization = pyo.Param(
+        self.k_isomerization = pyo.Param(
+            initialize=0.002,
+            mutable=True,
+            doc='Isomerization rate constant [kmol/(kg_cat·s)]',
+        )
+
+        self.k_oligomerization = pyo.Param(
+            initialize=0.0015,
+            mutable=True,
+            doc='Oligomerization rate constant [kmol/(kg_cat·s)]',
+        )
+
+        self.k_aromatization = pyo.Param(
             initialize=0.001,
             mutable=True,
-            doc='Olefin aromatization rate constant [kmol/(kg_cat·s)]',
+            doc='Aromatization rate constant [kmol/(kg_cat·s)]',
         )
 
         self.k_coke_formation = pyo.Param(
@@ -427,22 +629,166 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='Total molar flow [kmol/s]',
         )
 
-        self.mole_frac = pyo.Var(
+        self.mole_frac = pyo.Expression(
             self.flowsheet().time,
             self.W,
             self.component_list,
-            initialize=1.0 / len(self.component_list),
-            bounds=(0, 1),
+            rule=lambda b, t, w, c: b.flow_mol_comp[t, w, c] / (b.flow_mol_total[t, w] + 1e-12),
             doc='Mole fractions',
         )
 
-        self.partial_pressure = pyo.Var(
+        self.partial_pressure = pyo.Expression(
             self.flowsheet().time,
             self.W,
             self.component_list,
-            initialize=5e5,
-            bounds=(0, None),
+            rule=lambda b, t, w, c: b.mole_frac[t, w, c] * b.pressure[t, w],
             doc='Partial pressures [Pa]',
+        )
+
+        # ==================== THERMODYNAMICS (PLACEHOLDER PROPERTY BLOCK) ====================
+
+        self.T_ref = pyo.Param(
+            initialize=298.15,
+            mutable=True,
+            doc='Reference temperature for enthalpy [K]',
+        )
+
+        # Constant heat capacities [kJ/kmol-K] (placeholder values)
+        self.cp_comp = pyo.Param(
+            self.component_list,
+            initialize={
+                'CO2': 37.0,
+                'H2': 29.0,
+                'CO': 29.0,
+                'H2O': 34.0,
+                'C1': 35.0,
+                'C2_C4': 95.0,
+                'C5_C12': 180.0,
+                'C13_plus': 240.0,
+                'iso_C5_C12': 180.0,
+                'aromatics': 140.0,
+                'coke': 8.0,
+            },
+            mutable=True,
+            doc='Component heat capacities [kJ/kmol-K]',
+        )
+
+        # Standard enthalpies of formation [kJ/kmol] (placeholder values)
+        self.h_form = pyo.Param(
+            self.component_list,
+            initialize={
+                'CO2': -393520.0,
+                'H2': 0.0,
+                'CO': -110530.0,
+                'H2O': -241820.0,
+                'C1': -74850.0,
+                'C2_C4': -20000.0,
+                'C5_C12': -120000.0,
+                'C13_plus': -220000.0,
+                'iso_C5_C12': -120000.0,
+                'aromatics': 83000.0,
+                'coke': 0.0,
+            },
+            mutable=True,
+            doc='Enthalpy of formation [kJ/kmol]',
+        )
+
+        self.h_comp = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            self.component_list,
+            doc='Component molar enthalpy [kJ/kmol]',
+            rule=lambda b, t, w, c: b.h_form[c] + b.cp_comp[c] * (b.temperature[t, w] - b.T_ref),
+        )
+
+        def _props_rule(b, t, w):
+            b.enth_mol = pyo.Expression(
+                expr=sum(
+                    self.mole_frac[t, w, c] * self.h_comp[t, w, c]
+                    for c in self.component_list
+                )
+            )
+            b.cp_mol = pyo.Expression(
+                expr=sum(
+                    self.mole_frac[t, w, c] * self.cp_comp[c]
+                    for c in self.component_list
+                )
+            )
+
+        self.props = pyo.Block(self.flowsheet().time, self.W, rule=_props_rule)
+
+        # ==================== TRANSPORT/GEOMETRY EXPRESSIONS ====================
+
+        self.area = pyo.Expression(
+            expr=3.141592653589793 * (self.reactor_diameter / 2.0) ** 2,
+            doc='Reactor cross-sectional area [m^2]',
+        )
+
+        self.mw_mix = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: sum(
+                b.mole_frac[t, w, c] * b.mw_comp[c] for c in b.component_list
+            ),
+            doc='Mixture molecular weight [kg/kmol]',
+        )
+
+        self.gas_density = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: b.pressure[t, w] * b.mw_mix[t, w] / (b.R_gas * b.temperature[t, w]),
+            doc='Ideal-gas density [kg/m^3]',
+        )
+
+        self.vol_flow = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: b.flow_mol_total[t, w] * b.R_gas * b.temperature[t, w] / b.pressure[t, w],
+            doc='Volumetric flow [m^3/s]',
+        )
+
+        self.superficial_velocity = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: b.vol_flow[t, w] / b.area,
+            doc='Superficial velocity [m/s]',
+        )
+
+        self.dP_dz_ergun = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: (
+                150.0 * (1.0 - b.ergun_porosity) ** 2 * b.gas_viscosity
+                * b.superficial_velocity[t, w]
+                / (b.particle_diameter ** 2 * b.ergun_porosity ** 3)
+                + 1.75 * (1.0 - b.ergun_porosity)
+                * b.gas_density[t, w] * b.superficial_velocity[t, w] ** 2
+                / (b.particle_diameter * b.ergun_porosity ** 3)
+            ),
+            doc='Ergun pressure gradient [Pa/m]',
+        )
+
+        self.dP_dW_ergun = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            rule=lambda b, t, w: (
+                b.dP_dz_ergun[t, w]
+                / ((1.0 - b.ergun_porosity) * b.catalyst_bulk_density * b.area)
+                * b.W_total
+            ),
+            doc='Ergun pressure gradient in normalized W [Pa]',
+        )
+
+        self.rate_multiplier = pyo.Param(
+            initialize=1.0,
+            mutable=True,
+            doc='Homotopy multiplier for reaction rates (0 to 1)',
+        )
+
+        self.pressure_drop_multiplier = pyo.Param(
+            initialize=1.0,
+            mutable=True,
+            doc='Homotopy multiplier for pressure drop (0 to 1)',
         )
 
         # ==================== REACTION RATES ====================
@@ -454,33 +800,41 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='RWGS reaction rate [kmol/(kg_cat·s)]',
         )
         
-        self.rate_ch4 = pyo.Var(
+        self.rate_c1 = pyo.Var(
             self.flowsheet().time,
             self.W,
             initialize=0.001,
             bounds=None,
-            doc='CH4 formation rate [kmol/(kg_cat·s)]',
+            doc='C1 formation rate [kmol/(kg_cat·s)]',
         )
         
-        self.rate_c2h4 = pyo.Var(
+        self.rate_c2_c4 = pyo.Var(
             self.flowsheet().time,
             self.W,
             initialize=0.0005,
             bounds=None,
-            doc='C2H4 formation rate [kmol/(kg_cat·s)]',
+            doc='C2-C4 formation rate [kmol/(kg_cat·s)]',
         )
         
-        self.rate_c5plus = pyo.Var(
+        self.rate_c5_c12 = pyo.Var(
             self.flowsheet().time,
             self.W,
             initialize=0.0001,
             bounds=None,
-            doc='C5+ formation rate [kmol/(kg_cat·s)]',
+            doc='C5-C12 formation rate [kmol/(kg_cat·s)]',
+        )
+
+        self.rate_c13_plus = pyo.Var(
+            self.flowsheet().time,
+            self.W,
+            initialize=0.00005,
+            bounds=None,
+            doc='C13+ formation rate [kmol/(kg_cat·s)]',
         )
         
         # ==================== ZEOLITE REACTION RATES ====================
         
-        self.rate_wax_cracking = pyo.Var(
+        self.rate_cracking = pyo.Var(
             self.flowsheet().time,
             self.W,
             initialize=0.0001 if self.config.include_zeolite_reactions else 0.0,
@@ -488,20 +842,36 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='Wax cracking rate [kmol/(kg_cat·s)]',
         )
         
-        self.rate_distillate_cracking = pyo.Var(
+        self.rate_light_cracking = pyo.Var(
             self.flowsheet().time,
             self.W,
             initialize=0.00005 if self.config.include_zeolite_reactions else 0.0,
             bounds=None,
-            doc='Distillate cracking rate [kmol/(kg_cat·s)]',
+            doc='Light cracking rate [kmol/(kg_cat·s)]',
         )
         
-        self.rate_olefin_aromatization = pyo.Var(
+        self.rate_isomerization = pyo.Var(
             self.flowsheet().time,
             self.W,
             initialize=0.00001 if self.config.include_zeolite_reactions else 0.0,
             bounds=None,
-            doc='Olefin aromatization rate [kmol/(kg_cat·s)]',
+            doc='Isomerization rate [kmol/(kg_cat·s)]',
+        )
+
+        self.rate_oligomerization = pyo.Var(
+            self.flowsheet().time,
+            self.W,
+            initialize=0.00001 if self.config.include_zeolite_reactions else 0.0,
+            bounds=None,
+            doc='Oligomerization rate [kmol/(kg_cat·s)]',
+        )
+
+        self.rate_aromatization = pyo.Var(
+            self.flowsheet().time,
+            self.W,
+            initialize=0.000005 if self.config.include_zeolite_reactions else 0.0,
+            bounds=None,
+            doc='Aromatization rate [kmol/(kg_cat·s)]',
         )
         
         self.rate_coke_formation = pyo.Var(
@@ -520,6 +890,20 @@ class FTRWGSReactorData(UnitModelBlockData):
             wrt=self.W,
             doc='Derivative of flow w.r.t. catalyst weight',
         )
+
+        # Temperature derivative dT/dW
+        self.dT_dW = DerivativeVar(
+            self.temperature,
+            wrt=self.W,
+            doc='Derivative of temperature w.r.t. catalyst weight',
+        )
+
+        # Pressure derivative dP/dW (used if pressure_drop is enabled)
+        self.dP_dW = DerivativeVar(
+            self.pressure,
+            wrt=self.W,
+            doc='Derivative of pressure w.r.t. catalyst weight',
+        )
         
         # ==================== CONSTRAINTS ====================
         
@@ -534,25 +918,16 @@ class FTRWGSReactorData(UnitModelBlockData):
                 b.flow_mol_comp[t, w, c] for c in b.component_list
             )
         
-        # Mole fraction calculation
-        @self.Constraint(
-            self.flowsheet().time,
-            self.W,
-            self.component_list,
-            doc='Mole fractions',
-        )
-        def mole_frac_eq(b, t, w, c):
-            return b.mole_frac[t, w, c] * b.flow_mol_total[t, w] == b.flow_mol_comp[t, w, c]
-        
-        # Partial pressure calculation
-        @self.Constraint(
-            self.flowsheet().time,
-            self.W,
-            self.component_list,
-            doc='Partial pressures',
-        )
-        def partial_pressure_eq(b, t, w, c):
-            return b.partial_pressure[t, w, c] == b.mole_frac[t, w, c] * b.pressure[t, w]
+        if self.config.pressure_drop:
+            @self.Constraint(
+                self.flowsheet().time,
+                self.W,
+                doc='Pressure drop along catalyst bed',
+            )
+            def pressure_drop_eq(b, t, w):
+                if b.config.ergun_pressure_drop:
+                    return b.dP_dW[t, w] == -b.pressure_drop_multiplier * b.dP_dW_ergun[t, w]
+                return b.dP_dW[t, w] == -b.pressure_drop_multiplier * b.dp_dw * b.W_total
         
         # RWGS rate: r = k * (p_CO2 * p_H2 - p_CO * p_H2O / Keq)
         @self.Constraint(
@@ -561,88 +936,114 @@ class FTRWGSReactorData(UnitModelBlockData):
             doc='RWGS reaction rate',
         )
         def rate_rwgs_eq(b, t, w):
-            p_CO2 = b.partial_pressure[t, w, 'CO2']
-            p_H2 = b.partial_pressure[t, w, 'H2']
-            p_CO = b.partial_pressure[t, w, 'CO']
-            p_H2O = b.partial_pressure[t, w, 'H2O']
+            p_CO2 = b.partial_pressure[t, w, 'CO2'] / 1e5
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
+            p_H2O = b.partial_pressure[t, w, 'H2O'] / 1e5
             
             forward = p_CO2 * p_H2
             reverse = p_CO * p_H2O / b.Keq_rwgs
             
-            return b.rate_rwgs[t, w] == b.k_rwgs * (forward - reverse)
+            return b.rate_rwgs[t, w] == b.rate_multiplier * b.k_rwgs * (forward - reverse)
         
-        # CH4 formation rate: r = k * p_CO * p_H2
-        # Simplified from stoichiometric order p_CO * p_H2^3 for numerical stability
-        # Reaction stoichiometry: CO + 3H2 -> CH4 + H2O (atoms are balanced)
+        # C1 formation rate: r = k * p_CO * p_H2
+        # Simplified power-law for numerical stability
         @self.Constraint(
             self.flowsheet().time,
             self.W,
-            doc='CH4 formation rate (simplified power-law)',
+            doc='C1 formation rate (simplified power-law)',
         )
-        def rate_ch4_eq(b, t, w):
-            p_CO = b.partial_pressure[t, w, 'CO']
-            p_H2 = b.partial_pressure[t, w, 'H2']
-            return b.rate_ch4[t, w] == b.k_ch4 * p_CO * p_H2
+        def rate_c1_eq(b, t, w):
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            return b.rate_c1[t, w] == b.rate_multiplier * b.k_c1 * p_CO * p_H2
         
-        # C2H4 formation rate: r = k * p_CO * p_H2
-        # Simplified from stoichiometric order p_CO^2 * p_H2^4 for numerical stability
-        # Reaction stoichiometry: 2CO + 4H2 -> C2H4 + 2H2O (atoms are balanced)
+        # C2-C4 formation rate: r = k * p_CO * p_H2
         @self.Constraint(
             self.flowsheet().time,
             self.W,
-            doc='C2H4 formation rate (simplified power-law)',
+            doc='C2-C4 formation rate (simplified power-law)',
         )
-        def rate_c2h4_eq(b, t, w):
-            p_CO = b.partial_pressure[t, w, 'CO']
-            p_H2 = b.partial_pressure[t, w, 'H2']
-            return b.rate_c2h4[t, w] == b.k_c2h4 * p_CO * p_H2
+        def rate_c2_c4_eq(b, t, w):
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            return b.rate_c2_c4[t, w] == b.rate_multiplier * b.k_c2_c4 * p_CO * p_H2
         
-        # C5+ formation rate: r = k * p_CO * p_H2
-        # Simplified from stoichiometric order p_CO^5 * p_H2^10 for numerical stability
-        # Reaction stoichiometry: 5CO + 10H2 -> C5H10 + 5H2O (atoms are balanced)
+        # C5-C12 formation rate: r = k * p_CO * p_H2
         @self.Constraint(
             self.flowsheet().time,
             self.W,
-            doc='C5+ formation rate (simplified power-law)',
+            doc='C5-C12 formation rate (simplified power-law)',
         )
-        def rate_c5plus_eq(b, t, w):
-            p_CO = b.partial_pressure[t, w, 'CO']
-            p_H2 = b.partial_pressure[t, w, 'H2']
-            return b.rate_c5plus[t, w] == b.k_c5plus * p_CO * p_H2
+        def rate_c5_c12_eq(b, t, w):
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            return b.rate_c5_c12[t, w] == b.rate_multiplier * b.k_c5_c12 * p_CO * p_H2
+
+        # C13+ formation rate: r = k * p_CO * p_H2
+        @self.Constraint(
+            self.flowsheet().time,
+            self.W,
+            doc='C13+ formation rate (simplified power-law)',
+        )
+        def rate_c13_plus_eq(b, t, w):
+            p_CO = b.partial_pressure[t, w, 'CO'] / 1e5
+            p_H2 = b.partial_pressure[t, w, 'H2'] / 1e5
+            return b.rate_c13_plus[t, w] == b.rate_multiplier * b.k_c13_plus * p_CO * p_H2
         
         # ==================== ZEOLITE RATE EXPRESSIONS ====================
         # All zeolite reactions use simple first-order kinetics in key reactants
         
         if self.config.include_zeolite_reactions:
-            # Wax cracking: r = k * C5plus partial pressure
+            # Wax cracking: r = k * C13_plus mole fraction
             @self.Constraint(
                 self.flowsheet().time,
                 self.W,
-                doc='Wax cracking rate (first-order in C5plus)',
+                doc='Wax cracking rate (first-order in C13_plus)',
             )
-            def rate_wax_cracking_eq(b, t, w):
-                y_C5plus = b.mole_frac[t, w, 'C5plus']
-                return b.rate_wax_cracking[t, w] == b.k_wax_cracking * y_C5plus
+            def rate_cracking_eq(b, t, w):
+                y_c13 = b.mole_frac[t, w, 'C13_plus']
+                return b.rate_cracking[t, w] == b.rate_multiplier * b.k_cracking * y_c13
 
-            # Distillate cracking: r = k * distillate partial pressure
+            # Light cracking: r = k * C5_C12 mole fraction
             @self.Constraint(
                 self.flowsheet().time,
                 self.W,
-                doc='Distillate cracking rate (first-order in distillate)',
+                doc='Light cracking rate (first-order in C5_C12)',
             )
-            def rate_distillate_cracking_eq(b, t, w):
-                y_distillate = b.mole_frac[t, w, 'distillate']
-                return b.rate_distillate_cracking[t, w] == b.k_distillate_cracking * y_distillate
+            def rate_light_cracking_eq(b, t, w):
+                y_c5 = b.mole_frac[t, w, 'C5_C12']
+                return b.rate_light_cracking[t, w] == b.rate_multiplier * b.k_light_cracking * y_c5
 
-            # Olefin aromatization: r = k * C2H4 partial pressure
+            # Isomerization: r = k * C5_C12 mole fraction
             @self.Constraint(
                 self.flowsheet().time,
                 self.W,
-                doc='Olefin aromatization rate (first-order in C2H4)',
+                doc='Isomerization rate (first-order in C5_C12)',
             )
-            def rate_olefin_aromatization_eq(b, t, w):
-                y_c2h4 = b.mole_frac[t, w, 'C2H4']
-                return b.rate_olefin_aromatization[t, w] == b.k_olefin_aromatization * y_c2h4
+            def rate_isomerization_eq(b, t, w):
+                y_c5 = b.mole_frac[t, w, 'C5_C12']
+                return b.rate_isomerization[t, w] == b.rate_multiplier * b.k_isomerization * y_c5
+
+            # Oligomerization: r = k * C2_C4 mole fraction
+            @self.Constraint(
+                self.flowsheet().time,
+                self.W,
+                doc='Oligomerization rate (first-order in C2_C4)',
+            )
+            def rate_oligomerization_eq(b, t, w):
+                y_c2_c4 = b.mole_frac[t, w, 'C2_C4']
+                return b.rate_oligomerization[t, w] == b.rate_multiplier * b.k_oligomerization * y_c2_c4
+
+            # Aromatization: r = k * C2_C4 mole fraction
+            @self.Constraint(
+                self.flowsheet().time,
+                self.W,
+                doc='Aromatization rate (first-order in C2_C4)',
+            )
+            def rate_aromatization_eq(b, t, w):
+                y_c2_c4 = b.mole_frac[t, w, 'C2_C4']
+                return b.rate_aromatization[t, w] == b.rate_multiplier * b.k_aromatization * y_c2_c4
 
             # Coke formation: r = k * aromatics partial pressure
             @self.Constraint(
@@ -652,19 +1053,27 @@ class FTRWGSReactorData(UnitModelBlockData):
             )
             def rate_coke_formation_eq(b, t, w):
                 y_arom = b.mole_frac[t, w, 'aromatics']
-                return b.rate_coke_formation[t, w] == b.k_coke_formation * y_arom
+                return b.rate_coke_formation[t, w] == b.rate_multiplier * b.k_coke_formation * y_arom
         else:
-            @self.Constraint(self.flowsheet().time, self.W, doc='Wax cracking disabled')
-            def rate_wax_cracking_off(b, t, w):
-                return b.rate_wax_cracking[t, w] == 0.0
+            @self.Constraint(self.flowsheet().time, self.W, doc='Cracking disabled')
+            def rate_cracking_off(b, t, w):
+                return b.rate_cracking[t, w] == 0.0
 
-            @self.Constraint(self.flowsheet().time, self.W, doc='Distillate cracking disabled')
-            def rate_distillate_cracking_off(b, t, w):
-                return b.rate_distillate_cracking[t, w] == 0.0
+            @self.Constraint(self.flowsheet().time, self.W, doc='Light cracking disabled')
+            def rate_light_cracking_off(b, t, w):
+                return b.rate_light_cracking[t, w] == 0.0
 
-            @self.Constraint(self.flowsheet().time, self.W, doc='Olefin aromatization disabled')
-            def rate_olefin_aromatization_off(b, t, w):
-                return b.rate_olefin_aromatization[t, w] == 0.0
+            @self.Constraint(self.flowsheet().time, self.W, doc='Isomerization disabled')
+            def rate_isomerization_off(b, t, w):
+                return b.rate_isomerization[t, w] == 0.0
+
+            @self.Constraint(self.flowsheet().time, self.W, doc='Oligomerization disabled')
+            def rate_oligomerization_off(b, t, w):
+                return b.rate_oligomerization[t, w] == 0.0
+
+            @self.Constraint(self.flowsheet().time, self.W, doc='Aromatization disabled')
+            def rate_aromatization_off(b, t, w):
+                return b.rate_aromatization[t, w] == 0.0
 
             @self.Constraint(self.flowsheet().time, self.W, doc='Coke formation disabled')
             def rate_coke_formation_off(b, t, w):
@@ -681,19 +1090,111 @@ class FTRWGSReactorData(UnitModelBlockData):
         def material_balance_eq(b, t, w, c):
             ft_term = (
                 RWGS_STOICHIOMETRY.get(c, 0.0) * b.rate_rwgs[t, w]
-                + CH4_STOICHIOMETRY.get(c, 0.0) * b.rate_ch4[t, w]
-                + C2H4_STOICHIOMETRY.get(c, 0.0) * b.rate_c2h4[t, w]
-                + C5PLUS_STOICHIOMETRY.get(c, 0.0) * b.rate_c5plus[t, w]
+                + C1_STOICHIOMETRY.get(c, 0.0) * b.rate_c1[t, w]
+                + C2_C4_STOICHIOMETRY.get(c, 0.0) * b.rate_c2_c4[t, w]
+                + C5_C12_STOICHIOMETRY.get(c, 0.0) * b.rate_c5_c12[t, w]
+                + C13_PLUS_STOICHIOMETRY.get(c, 0.0) * b.rate_c13_plus[t, w]
             )
 
             zeo_term = (
-                WAX_CRACKING_STOICHIOMETRY.get(c, 0.0) * b.rate_wax_cracking[t, w]
-                + DISTILLATE_CRACKING_STOICHIOMETRY.get(c, 0.0) * b.rate_distillate_cracking[t, w]
-                + OLEFIN_AROMATIZATION_STOICHIOMETRY.get(c, 0.0) * b.rate_olefin_aromatization[t, w]
+                CRACKING_STOICHIOMETRY.get(c, 0.0) * b.rate_cracking[t, w]
+                + LIGHT_CRACKING_STOICHIOMETRY.get(c, 0.0) * b.rate_light_cracking[t, w]
+                + ISOMERIZATION_STOICHIOMETRY.get(c, 0.0) * b.rate_isomerization[t, w]
+                + OLIGOMERIZATION_STOICHIOMETRY.get(c, 0.0) * b.rate_oligomerization[t, w]
+                + AROMATIZATION_STOICHIOMETRY.get(c, 0.0) * b.rate_aromatization[t, w]
                 + COKE_FORMATION_STOICHIOMETRY.get(c, 0.0) * b.rate_coke_formation[t, w]
             )
+            eta_ft = b.eta_ft if b.config.mass_transfer else 1.0
+            eta_zeo = b.eta_zeolite if b.config.mass_transfer else 1.0
 
-            return b.dF_dW[t, w, c] == ft_term + zeo_term
+            return b.dF_dW[t, w, c] == eta_ft * ft_term + eta_zeo * zeo_term
+
+        # ==================== SCALING FACTORS ====================
+        iscale.set_scaling_factor(self.flow_mol_comp, 1.0)
+        iscale.set_scaling_factor(self.flow_mol_total, 1.0)
+        iscale.set_scaling_factor(self.pressure, 1e-6)
+        iscale.set_scaling_factor(self.temperature, 1e-2)
+        iscale.set_scaling_factor(self.rate_rwgs, 1e2)
+        iscale.set_scaling_factor(self.rate_c1, 1e3)
+        iscale.set_scaling_factor(self.rate_c2_c4, 1e3)
+        iscale.set_scaling_factor(self.rate_c5_c12, 1e3)
+        iscale.set_scaling_factor(self.rate_c13_plus, 1e3)
+        iscale.set_scaling_factor(self.rate_cracking, 1e3)
+        iscale.set_scaling_factor(self.rate_light_cracking, 1e3)
+        iscale.set_scaling_factor(self.rate_isomerization, 1e3)
+        iscale.set_scaling_factor(self.rate_oligomerization, 1e3)
+        iscale.set_scaling_factor(self.rate_aromatization, 1e3)
+        iscale.set_scaling_factor(self.rate_coke_formation, 1e3)
+        iscale.set_scaling_factor(self.dF_dW, 1.0)
+        iscale.set_scaling_factor(self.dT_dW, 1.0)
+        iscale.set_scaling_factor(self.dP_dW, 1e-5)
+
+        iscale.calculate_scaling_factors(self)
+
+        # ==================== REACTION ENTHALPIES ====================
+
+        self.reaction_stoich = {
+            'rwgs': RWGS_STOICHIOMETRY,
+            'c1': C1_STOICHIOMETRY,
+            'c2_c4': C2_C4_STOICHIOMETRY,
+            'c5_c12': C5_C12_STOICHIOMETRY,
+            'c13_plus': C13_PLUS_STOICHIOMETRY,
+            'cracking': CRACKING_STOICHIOMETRY,
+            'light_cracking': LIGHT_CRACKING_STOICHIOMETRY,
+            'isomerization': ISOMERIZATION_STOICHIOMETRY,
+            'oligomerization': OLIGOMERIZATION_STOICHIOMETRY,
+            'aromatization': AROMATIZATION_STOICHIOMETRY,
+            'coke_formation': COKE_FORMATION_STOICHIOMETRY,
+        }
+
+        self.reaction_rate = {
+            'rwgs': self.rate_rwgs,
+            'c1': self.rate_c1,
+            'c2_c4': self.rate_c2_c4,
+            'c5_c12': self.rate_c5_c12,
+            'c13_plus': self.rate_c13_plus,
+            'cracking': self.rate_cracking,
+            'light_cracking': self.rate_light_cracking,
+            'isomerization': self.rate_isomerization,
+            'oligomerization': self.rate_oligomerization,
+            'aromatization': self.rate_aromatization,
+            'coke_formation': self.rate_coke_formation,
+        }
+
+        self.dH_rxn = pyo.Expression(
+            self.flowsheet().time,
+            self.W,
+            self.reaction_stoich.keys(),
+            doc='Reaction enthalpies [kJ/kmol]',
+            rule=lambda b, t, w, r: sum(
+                self.reaction_stoich[r].get(c, 0.0) * b.h_comp[t, w, c]
+                for c in self.component_list
+            ),
+        )
+
+        # ==================== ENERGY BALANCE ====================
+
+        if self.config.energy_balance:
+            @self.Constraint(
+                self.flowsheet().time,
+                self.W,
+                doc='Energy balance (adiabatic)',
+            )
+            def energy_balance_eq(b, t, w):
+                lhs = sum(
+                    b.dF_dW[t, w, c] * b.h_comp[t, w, c]
+                    for c in b.component_list
+                ) + b.flow_mol_total[t, w] * b.props[t, w].cp_mol * b.dT_dW[t, w]
+
+                rhs = -sum(
+                    b.dH_rxn[t, w, r] * b.reaction_rate[r][t, w]
+                    for r in b.reaction_stoich.keys()
+                )
+
+                if b.config.heat_transfer:
+                    rhs += -b.ua_per_kg * b.W_total * (b.temperature[t, w] - b.T_coolant)
+
+                return lhs == rhs
         
     def initialize(
         self,
@@ -703,13 +1204,27 @@ class FTRWGSReactorData(UnitModelBlockData):
         W_total: float = 1.0,
         k_rwgs: Optional[float] = None,
         Keq_rwgs: Optional[float] = None,
-        k_ch4: Optional[float] = None,
-        k_c2h4: Optional[float] = None,
-        k_c5plus: Optional[float] = None,
-        k_wax_cracking: Optional[float] = None,
-        k_distillate_cracking: Optional[float] = None,
-        k_olefin_aromatization: Optional[float] = None,
+        k_c1: Optional[float] = None,
+        k_c2_c4: Optional[float] = None,
+        k_c5_c12: Optional[float] = None,
+        k_c13_plus: Optional[float] = None,
+        k_cracking: Optional[float] = None,
+        k_light_cracking: Optional[float] = None,
+        k_isomerization: Optional[float] = None,
+        k_oligomerization: Optional[float] = None,
+        k_aromatization: Optional[float] = None,
         k_coke_formation: Optional[float] = None,
+        dp_dw: Optional[float] = None,
+        ergun_porosity: Optional[float] = None,
+        particle_diameter: Optional[float] = None,
+        catalyst_bulk_density: Optional[float] = None,
+        reactor_diameter: Optional[float] = None,
+        reactor_length: Optional[float] = None,
+        gas_viscosity: Optional[float] = None,
+        ua_per_kg: Optional[float] = None,
+        T_coolant: Optional[float] = None,
+        eta_ft: Optional[float] = None,
+        eta_zeolite: Optional[float] = None,
     ):
         """
         Initialize the reactor with inlet conditions and optional parameters.
@@ -724,35 +1239,148 @@ class FTRWGSReactorData(UnitModelBlockData):
             self.k_rwgs.set_value(k_rwgs)
         if Keq_rwgs is not None:
             self.Keq_rwgs.set_value(Keq_rwgs)
-        if k_ch4 is not None:
-            self.k_ch4.set_value(k_ch4)
-        if k_c2h4 is not None:
-            self.k_c2h4.set_value(k_c2h4)
-        if k_c5plus is not None:
-            self.k_c5plus.set_value(k_c5plus)
-        if k_wax_cracking is not None:
-            self.k_wax_cracking.set_value(k_wax_cracking)
-        if k_distillate_cracking is not None:
-            self.k_distillate_cracking.set_value(k_distillate_cracking)
-        if k_olefin_aromatization is not None:
-            self.k_olefin_aromatization.set_value(k_olefin_aromatization)
+        if k_c1 is not None:
+            self.k_c1.set_value(k_c1)
+        if k_c2_c4 is not None:
+            self.k_c2_c4.set_value(k_c2_c4)
+        if k_c5_c12 is not None:
+            self.k_c5_c12.set_value(k_c5_c12)
+        if k_c13_plus is not None:
+            self.k_c13_plus.set_value(k_c13_plus)
+        if k_cracking is not None:
+            self.k_cracking.set_value(k_cracking)
+        if k_light_cracking is not None:
+            self.k_light_cracking.set_value(k_light_cracking)
+        if k_isomerization is not None:
+            self.k_isomerization.set_value(k_isomerization)
+        if k_oligomerization is not None:
+            self.k_oligomerization.set_value(k_oligomerization)
+        if k_aromatization is not None:
+            self.k_aromatization.set_value(k_aromatization)
         if k_coke_formation is not None:
             self.k_coke_formation.set_value(k_coke_formation)
+        if dp_dw is not None:
+            self.dp_dw.set_value(dp_dw)
+        if ergun_porosity is not None:
+            self.ergun_porosity.set_value(ergun_porosity)
+        if particle_diameter is not None:
+            self.particle_diameter.set_value(particle_diameter)
+        if catalyst_bulk_density is not None:
+            self.catalyst_bulk_density.set_value(catalyst_bulk_density)
+        if reactor_diameter is not None:
+            self.reactor_diameter.set_value(reactor_diameter)
+        if reactor_length is not None:
+            self.reactor_length.set_value(reactor_length)
+        if gas_viscosity is not None:
+            self.gas_viscosity.set_value(gas_viscosity)
+        if ua_per_kg is not None:
+            self.ua_per_kg.set_value(ua_per_kg)
+        if T_coolant is not None:
+            self.T_coolant.set_value(T_coolant)
+        if eta_ft is not None:
+            self.eta_ft.set_value(eta_ft)
+        if eta_zeolite is not None:
+            self.eta_zeolite.set_value(eta_zeolite)
 
         # Fix inlet conditions at W=0
         for comp in self.component_list:
             flow = inlet_flow.get(comp, 0.0)
             self.flow_mol_comp[t, w0, comp].fix(flow)
 
-        # Isothermal/isobaric assumption: fix T and P along W
+        if self.config.pressure_drop:
+            # Pressure drop enabled: fix inlet only and initialize profile
+            self.pressure[t, w0].fix(pressure)
+            for w in self.W:
+                if w != w0:
+                    self.pressure[t, w].set_value(
+                        pressure - self.dp_dw.value * self.W_total.value * w
+                    )
+                    self.pressure[t, w].unfix()
+        else:
+            # Isobaric: fix pressure along W
+            for w in self.W:
+                self.pressure[t, w].fix(pressure)
+
+        if self.config.energy_balance:
+            # Energy balance enabled: fix inlet T only, initialize profile
+            self.temperature[t, w0].fix(temperature)
+            for w in self.W:
+                if w != w0:
+                    self.temperature[t, w].set_value(temperature)
+                    self.temperature[t, w].unfix()
+        else:
+            # Isothermal mode: fix T along W
+            for w in self.W:
+                self.temperature[t, w].fix(temperature)
+
+        # Propagate initial guesses along W
         for w in self.W:
-            self.temperature[t, w].fix(temperature)
-            self.pressure[t, w].fix(pressure)
             if w != w0:
                 for comp in self.component_list:
                     self.flow_mol_comp[t, w, comp].set_value(
                         self.flow_mol_comp[t, w0, comp].value
                     )
+
+        for w in self.W:
+            total_flow = sum(
+                self.flow_mol_comp[t, w, comp].value
+                for comp in self.component_list
+            )
+            self.flow_mol_total[t, w].set_value(total_flow)
+
+        rate_mult = self.rate_multiplier.value
+        eta_ft = self.eta_ft.value
+        eta_zeo = self.eta_zeolite.value
+
+        for w in self.W:
+            total_flow = self.flow_mol_total[t, w].value
+            if total_flow <= 0.0:
+                continue
+
+            pressure_w = self.pressure[t, w].value
+            y = {
+                comp: self.flow_mol_comp[t, w, comp].value / total_flow
+                for comp in self.component_list
+            }
+            p = {comp: y[comp] * pressure_w / 1e5 for comp in self.component_list}
+
+            self.rate_rwgs[t, w].set_value(
+                rate_mult * self.k_rwgs.value * (
+                    p['CO2'] * p['H2'] - p['CO'] * p['H2O'] / self.Keq_rwgs.value
+                )
+            )
+            self.rate_c1[t, w].set_value(rate_mult * self.k_c1.value * p['CO'] * p['H2'])
+            self.rate_c2_c4[t, w].set_value(rate_mult * self.k_c2_c4.value * p['CO'] * p['H2'])
+            self.rate_c5_c12[t, w].set_value(rate_mult * self.k_c5_c12.value * p['CO'] * p['H2'])
+            self.rate_c13_plus[t, w].set_value(rate_mult * self.k_c13_plus.value * p['CO'] * p['H2'])
+
+            if self.config.include_zeolite_reactions:
+                self.rate_cracking[t, w].set_value(rate_mult * self.k_cracking.value * y['C13_plus'])
+                self.rate_light_cracking[t, w].set_value(rate_mult * self.k_light_cracking.value * y['C5_C12'])
+                self.rate_isomerization[t, w].set_value(rate_mult * self.k_isomerization.value * y['C5_C12'])
+                self.rate_oligomerization[t, w].set_value(rate_mult * self.k_oligomerization.value * y['C2_C4'])
+                self.rate_aromatization[t, w].set_value(rate_mult * self.k_aromatization.value * y['C2_C4'])
+                self.rate_coke_formation[t, w].set_value(rate_mult * self.k_coke_formation.value * y['aromatics'])
+            else:
+                self.rate_cracking[t, w].set_value(0.0)
+                self.rate_light_cracking[t, w].set_value(0.0)
+                self.rate_isomerization[t, w].set_value(0.0)
+                self.rate_oligomerization[t, w].set_value(0.0)
+                self.rate_aromatization[t, w].set_value(0.0)
+                self.rate_coke_formation[t, w].set_value(0.0)
+
+            for comp in self.component_list:
+                ft_term = sum(
+                    FT_REACTIONS[r].get(comp, 0.0) * self.reaction_rate[r][t, w].value
+                    for r in FT_REACTIONS
+                )
+                zeo_term = 0.0
+                if self.config.include_zeolite_reactions:
+                    zeo_term = sum(
+                        ZEOLITE_REACTIONS[r].get(comp, 0.0) * self.reaction_rate[r][t, w].value
+                        for r in ZEOLITE_REACTIONS
+                    )
+                self.dF_dW[t, w, comp].set_value(eta_ft * ft_term + eta_zeo * zeo_term)
 
         print("[OK] Reactor initialized successfully")
         print(
@@ -769,9 +1397,10 @@ def build_ft_rwgs_reactor(
     W_total: float = 1.0,
     k_rwgs: float = 0.1,
     Keq_rwgs: float = 0.8,
-    k_ch4: float = 0.05,
-    k_c2h4: float = 0.02,
-    k_c5plus: float = 0.01,
+    k_c1: float = 0.05,
+    k_c2_c4: float = 0.02,
+    k_c5_c12: float = 0.01,
+    k_c13_plus: float = 0.005,
 ) -> FTRWGSReactorData:
     """
     Build and initialize an RWGS + FT reactor.
@@ -792,12 +1421,14 @@ def build_ft_rwgs_reactor(
         RWGS rate constant
     Keq_rwgs : float
         RWGS equilibrium constant
-    k_ch4 : float
-        CH4 formation rate constant
-    k_c2h4 : float
-        C2H4 formation rate constant
-    k_c5plus : float
-        C5+ formation rate constant
+    k_c1 : float
+        C1 formation rate constant
+    k_c2_c4 : float
+        C2-C4 formation rate constant
+    k_c5_c12 : float
+        C5-C12 formation rate constant
+    k_c13_plus : float
+        C13+ formation rate constant
     
     Returns
     -------
@@ -813,9 +1444,10 @@ def build_ft_rwgs_reactor(
         W_total=W_total,
         k_rwgs=k_rwgs,
         Keq_rwgs=Keq_rwgs,
-        k_ch4=k_ch4,
-        k_c2h4=k_c2h4,
-        k_c5plus=k_c5plus,
+        k_c1=k_c1,
+        k_c2_c4=k_c2_c4,
+        k_c5_c12=k_c5_c12,
+        k_c13_plus=k_c13_plus,
     )
     
     return reactor
@@ -900,335 +1532,253 @@ def verify_atom_conservation(model, inlet_flow: Dict[str, float], tolerance: flo
     return True
 
 
-def test_ft_vs_ft_with_zeolite():
-    """
-    Comparison test: FT only vs FT + Zeolite reactions.
-    
-    This test runs two scenarios:
-    1. FT synthesis only (zeolite reactions disabled)
-    2. FT + Zeolite upgrading (zeolite reactions enabled)
-    
-    Verifies that:
-    - Both scenarios solve to optimality
-    - C5plus decreases when zeolite reactions are enabled
-    - Zeolite upgrade products (distillate, naphtha, aromatics) form
-    - Atom conservation maintained in both cases
-    """
-    print("\n" + "="*70)
-    print("COMPARISON TEST: FT only vs FT + Zeolite")
-    print("="*70)
-    
-    # Common inlet composition
-    inlet_flow = {
-        'CO2': 0.0,
-        'H2': 0.4,
-        'CO': 0.6,
-        'H2O': 0.0,
-        'CH4': 0.0,
-        'C2H4': 0.0,
-        'C5plus': 0.0,
-        'distillate': 0.0,
-        'LPG': 0.0,
-        'naphtha': 0.0,
-        'aromatics': 0.0,
-        'coke': 0.0,
-    }
-    
-    T_inlet = 523.15  # K
-    P_inlet = 20.0    # bar
-    W_total = 5.0     # kg catalyst
-    
-    # ==================== Scenario 1: FT Only ====================
-    print("\n1. Running FT-only scenario (zeolite disabled)...")
-    
-    m1 = pyo.ConcreteModel()
-    m1.fs = FlowsheetBlock(dynamic=False, time_set=[0])
-    m1.fs.reactor = FTRWGSReactor(include_zeolite_reactions=False)
-    
-    t = 0
-    reactor1 = m1.fs.reactor
-    
-    # Initialize
-    reactor1.initialize(
-        inlet_flow=inlet_flow,
-        temperature=T_inlet,
-        pressure=P_inlet * 101325.0,
-        W_total=W_total,
-    )
-    
-    # Set up discretization
-    discretize_reactor(reactor1, nfe=20)
-    
-    # Set inlet boundary conditions
-    for c in reactor1.component_list:
-        reactor1.flow_mol_comp[t, 0, c].set_value(inlet_flow.get(c, 0.0))
-    
-    reactor1.temperature[t, 0].set_value(T_inlet)
-    reactor1.pressure[t, 0].set_value(P_inlet * 101325.0)
-    
-    # Solve
-    solver = SolverFactory('ipopt')
-    solver.options['max_iter'] = 500
-    solver.options['tol'] = 1e-6
-    
-    print("  Discretizing and solving...")
-    results1 = solver.solve(m1, tee=False)
-    
-    ft_only_success = results1.solver.termination_condition == TerminationCondition.optimal
-    
-    if ft_only_success:
-        print("  [OK] FT-only scenario converged")
-        W_inlet = reactor1.W.first()
-        W_outlet = reactor1.W.last()
-        
-        C5plus_ft_only = value(reactor1.flow_mol_comp[t, W_outlet, 'C5plus'])
-        distillate_ft_only = value(reactor1.flow_mol_comp[t, W_outlet, 'distillate'])
-        aromatics_ft_only = value(reactor1.flow_mol_comp[t, W_outlet, 'aromatics'])
-        coke_ft_only = value(reactor1.flow_mol_comp[t, W_outlet, 'coke'])
-        
-        print(f"      C5plus at outlet: {C5plus_ft_only:.6f} kmol/s")
-        print(f"      Distillate:       {distillate_ft_only:.6f} kmol/s")
-        print(f"      Aromatics:        {aromatics_ft_only:.6f} kmol/s")
-        print(f"      Coke:             {coke_ft_only:.6f} kmol/s")
-    else:
-        print(f"  [FAIL] FT-only solve failed: {results1.solver.termination_condition}")
-        ft_only_success = False
-    
-    # ==================== Scenario 2: FT + Zeolite ====================
-    print("\n2. Running FT + Zeolite scenario (zeolite enabled)...")
-    
-    m2 = pyo.ConcreteModel()
-    m2.fs = FlowsheetBlock(dynamic=False, time_set=[0])
-    m2.fs.reactor = FTRWGSReactor(include_zeolite_reactions=True)
-    
-    reactor2 = m2.fs.reactor
-    
-    # Initialize
-    reactor2.initialize(
-        inlet_flow=inlet_flow,
-        temperature=T_inlet,
-        pressure=P_inlet * 101325.0,
-        W_total=W_total,
-        k_wax_cracking=0.005,
-        k_distillate_cracking=0.003,
-        k_olefin_aromatization=0.001,
-        k_coke_formation=0.0001,
-    )
-    
-    # Set up discretization
-    discretize_reactor(reactor2, nfe=20)
-    
-    # Set inlet boundary conditions
-    for c in reactor2.component_list:
-        reactor2.flow_mol_comp[t, 0, c].set_value(inlet_flow.get(c, 0.0))
-    
-    reactor2.temperature[t, 0].set_value(T_inlet)
-    reactor2.pressure[t, 0].set_value(P_inlet * 101325.0)
-    
-    # Solve
-    print("  Discretizing and solving...")
-    results2 = solver.solve(m2, tee=False)
-    
-    ft_zeo_success = results2.solver.termination_condition == TerminationCondition.optimal
-    
-    if ft_zeo_success:
-        print("  [OK] FT+Zeolite scenario converged")
-        W_inlet = reactor2.W.first()
-        W_outlet = reactor2.W.last()
-        
-        C5plus_ft_zeo = value(reactor2.flow_mol_comp[t, W_outlet, 'C5plus'])
-        distillate_ft_zeo = value(reactor2.flow_mol_comp[t, W_outlet, 'distillate'])
-        naphtha_ft_zeo = value(reactor2.flow_mol_comp[t, W_outlet, 'naphtha'])
-        aromatics_ft_zeo = value(reactor2.flow_mol_comp[t, W_outlet, 'aromatics'])
-        coke_ft_zeo = value(reactor2.flow_mol_comp[t, W_outlet, 'coke'])
-        lpg_ft_zeo = value(reactor2.flow_mol_comp[t, W_outlet, 'LPG'])
-        
-        print(f"      C5plus at outlet: {C5plus_ft_zeo:.6f} kmol/s")
-        print(f"      Distillate:       {distillate_ft_zeo:.6f} kmol/s")
-        print(f"      Naphtha:          {naphtha_ft_zeo:.6f} kmol/s")
-        print(f"      LPG:              {lpg_ft_zeo:.6f} kmol/s")
-        print(f"      Aromatics:        {aromatics_ft_zeo:.6f} kmol/s")
-        print(f"      Coke:             {coke_ft_zeo:.6f} kmol/s")
-    else:
-        print(f"  [FAIL] FT+Zeolite solve failed: {results2.solver.termination_condition}")
-        ft_zeo_success = False
-    
-    # ==================== Comparison Analysis ====================
-    print("\n" + "="*70)
-    print("COMPARISON ANALYSIS")
-    print("="*70)
-    
-    if ft_only_success and ft_zeo_success:
-        print("\nOK: Both scenarios converged to optimality")
-        
-        # Check that C5plus decreases with zeolite reactions
-        c5_decrease = C5plus_ft_only - C5plus_ft_zeo
-        print(f"\nC5plus reduction by zeolite reactions:")
-        print(f"  FT-only:    {C5plus_ft_only:.6f} kmol/s")
-        print(f"  FT+Zeolite: {C5plus_ft_zeo:.6f} kmol/s")
-        print(f"  Decrease:   {c5_decrease:.6f} kmol/s")
-        
-        if c5_decrease > 0:
-            print("  OK: C5plus reduced as expected")
-        else:
-            print("  Warning: C5plus did not decrease significantly")
-        
-        # Check zeolite product formation
-        print(f"\nZeolite product formation:")
-        distillate_formed = distillate_ft_zeo - distillate_ft_only
-        naphtha_formed = naphtha_ft_zeo
-        aromatics_formed = aromatics_ft_zeo - aromatics_ft_only
-        
-        print(f"  Distillate increase: {distillate_formed:.6f} kmol/s")
-        print(f"  Naphtha formed:      {naphtha_formed:.6f} kmol/s")
-        print(f"  Aromatics increase:  {aromatics_formed:.6f} kmol/s")
-        
-        if distillate_formed > 0 or naphtha_formed > 0 or aromatics_formed > 0:
-            print("  OK: Zeolite upgrade products formed as expected")
-        
-        # Atom conservation
-        print(f"\nAtom conservation check:")
-        try:
-            print("  FT-only scenario:")
-            verify_atom_conservation(m1, inlet_flow, tolerance=1.0)
-            print("  FT+Zeolite scenario:")
-            verify_atom_conservation(m2, inlet_flow, tolerance=1.0)
-            print("  OK: Both scenarios maintain atom conservation")
-        except Exception as e:
-            print(f"  Warning: {e}")
-        
-        print("\n" + "="*70)
-        print("[OK] COMPARISON TEST PASSED")
-        print("="*70)
-        return True
-    else:
-        print("\n[FAIL] One or both scenarios failed to converge")
-        return False
 
 
-if __name__ == '__main__':
+def run_single_simulation(sim_config: Dict[str, float], inlet_flow: Dict[str, float]) -> bool:
+    """
+    Run a single simulation with the provided configuration.
+    """
     from pyomo.environ import ConcreteModel, SolverFactory, TerminationCondition
     from idaes.core import FlowsheetBlock
-    
+
     print("\n" + "="*70)
-    print("RWGS + FT + ZEOLITE REACTOR - COMPREHENSIVE TEST SUITE")
+    print("RWGS + FT + ZEOLITE REACTOR - SINGLE SIMULATION")
     print("="*70)
-    
-    # First run the basic FT self-test
-    print("\n" + "="*70)
-    print("TEST 1: FT Reactor Self-Test (Zeolite Disabled)")
-    print("="*70)
-    
-    # Create model
+
     print("\n1. Building model...")
     m = ConcreteModel()
     m.fs = FlowsheetBlock(dynamic=False, time_set=[0])
-    
-    # Define inlet conditions: synthesis gas (CO + H2, no CO2/H2O)
-    # This tests the reactions in the forward direction without RWGS
-    inlet_flow = {
-        'CO2': 0.0,
-        'H2': 0.4,
-        'CO': 0.6,
-        'H2O': 0.0,
-        'CH4': 0.0,
-        'C2H4': 0.0,
-        'C5plus': 0.0,
-        'distillate': 0.0,
-        'LPG': 0.0,
-        'naphtha': 0.0,
-        'aromatics': 0.0,
-        'coke': 0.0,
-    }
-    
-    print("\n2. Creating reactor (zeolite disabled)...")
-    m.fs.reactor = FTRWGSReactor(include_zeolite_reactions=False)
+
+    print("\n2. Creating reactor...")
+    m.fs.reactor = FTRWGSReactor(
+        include_zeolite_reactions=bool(sim_config['include_zeolite_reactions']),
+        energy_balance=bool(sim_config['energy_balance']),
+        pressure_drop=bool(sim_config['pressure_drop']),
+        ergun_pressure_drop=bool(sim_config['ergun_pressure_drop']),
+        heat_transfer=bool(sim_config['heat_transfer']),
+        mass_transfer=bool(sim_config['mass_transfer']),
+    )
+
     m.fs.reactor.initialize(
         inlet_flow=inlet_flow,
-        temperature=523.15,
-        pressure=20.0 * 101325.0,
-        W_total=5.0,
+        temperature=sim_config['temperature'],
+        pressure=sim_config['pressure_bar'] * 101325.0,
+        W_total=sim_config['W_total'],
+        k_rwgs=sim_config['k_rwgs'],
+        Keq_rwgs=sim_config['Keq_rwgs'],
+        k_c1=sim_config['k_c1'],
+        k_c2_c4=sim_config['k_c2_c4'],
+        k_c5_c12=sim_config['k_c5_c12'],
+        k_c13_plus=sim_config['k_c13_plus'],
+        k_cracking=sim_config['k_cracking'],
+        k_light_cracking=sim_config['k_light_cracking'],
+        k_isomerization=sim_config['k_isomerization'],
+        k_oligomerization=sim_config['k_oligomerization'],
+        k_aromatization=sim_config['k_aromatization'],
+        k_coke_formation=sim_config['k_coke_formation'],
+        dp_dw=sim_config['dp_dw'],
+        ergun_porosity=sim_config['ergun_porosity'],
+        particle_diameter=sim_config['particle_diameter'],
+        catalyst_bulk_density=sim_config['catalyst_bulk_density'],
+        reactor_diameter=sim_config['reactor_diameter'],
+        reactor_length=sim_config['reactor_length'],
+        gas_viscosity=sim_config['gas_viscosity'],
+        ua_per_kg=sim_config['ua_per_kg'],
+        T_coolant=sim_config['T_coolant'],
+        eta_ft=sim_config['eta_ft'],
+        eta_zeolite=sim_config['eta_zeolite'],
     )
-    
-    # Set up discretization
+
     print("\n3. Discretizing spatial domain...")
-    discretize_reactor(m.fs.reactor, nfe=20)
-    
-    # Apply boundary conditions
+    discretize_reactor(m.fs.reactor, nfe=int(sim_config['nfe']))
+
     t = 0
     W_inlet = m.fs.reactor.W.first()
     for c in m.fs.reactor.component_list:
         m.fs.reactor.flow_mol_comp[t, W_inlet, c].set_value(inlet_flow.get(c, 0.0))
-    
-    m.fs.reactor.temperature[t, W_inlet].set_value(523.15)
-    m.fs.reactor.pressure[t, W_inlet].set_value(20.0 * 101325.0)
-    
-    # Solve
+
+    m.fs.reactor.temperature[t, W_inlet].set_value(sim_config['temperature'])
+    m.fs.reactor.pressure[t, W_inlet].set_value(sim_config['pressure_bar'] * 101325.0)
+
     print("\n4. Solving with IPOPT...")
     solver = SolverFactory('ipopt')
-    solver.options['max_iter'] = 500
-    solver.options['tol'] = 1e-6
-    
+    solver.options['max_iter'] = int(sim_config['max_iter'])
+    solver.options['tol'] = sim_config['tol']
+
     try:
+        from pyomo.util.infeasible import log_infeasible_constraints, log_infeasible_bounds
+        import logging
+
+        if sim_config.get('staged_solve', True):
+            original_eta_ft = m.fs.reactor.eta_ft.value
+            original_eta_zeo = m.fs.reactor.eta_zeolite.value
+            original_ua = m.fs.reactor.ua_per_kg.value
+            original_rate_multiplier = m.fs.reactor.rate_multiplier.value
+            original_pressure_drop_multiplier = m.fs.reactor.pressure_drop_multiplier.value
+
+            if m.fs.reactor.config.mass_transfer:
+                m.fs.reactor.eta_ft.set_value(1.0)
+                m.fs.reactor.eta_zeolite.set_value(1.0)
+
+            if m.fs.reactor.config.heat_transfer:
+                m.fs.reactor.ua_per_kg.set_value(0.0)
+
+            if m.fs.reactor.config.pressure_drop:
+                m.fs.reactor.pressure_drop_multiplier.set_value(0.0)
+
+            for ramp_value in (0.0, 0.01, 0.03, 0.1, 0.3, 0.6, 1.0):
+                m.fs.reactor.rate_multiplier.set_value(ramp_value)
+                solver.options['max_iter'] = 400
+                stage_results = solver.solve(m, tee=False)
+                if stage_results.solver.termination_condition != TerminationCondition.optimal:
+                    print(f"[WARN] Staged solve at rate_multiplier={ramp_value} failed: {stage_results.solver.termination_condition}")
+                    break
+
+            if m.fs.reactor.config.pressure_drop:
+                for pd_value in (0.0, 0.1, 0.3, 0.6, 1.0):
+                    m.fs.reactor.pressure_drop_multiplier.set_value(pd_value)
+                    solver.options['max_iter'] = 400
+                    stage_results = solver.solve(m, tee=False)
+                    if stage_results.solver.termination_condition != TerminationCondition.optimal:
+                        print(f"[WARN] Staged solve at pressure_drop_multiplier={pd_value} failed: {stage_results.solver.termination_condition}")
+                        break
+
+            m.fs.reactor.eta_ft.set_value(original_eta_ft)
+            m.fs.reactor.eta_zeolite.set_value(original_eta_zeo)
+            m.fs.reactor.ua_per_kg.set_value(original_ua)
+            m.fs.reactor.rate_multiplier.set_value(original_rate_multiplier)
+            m.fs.reactor.pressure_drop_multiplier.set_value(original_pressure_drop_multiplier)
+
+            solver.options['max_iter'] = int(sim_config['max_iter'])
+
         results = solver.solve(m, tee=True)
-        
+
         if results.solver.termination_condition == TerminationCondition.optimal:
             print("[OK] Solution converged!")
-            
-            # Print results
+
             print("\n" + "="*70)
             print("REACTOR RESULTS")
             print("="*70)
-            
+
             print("\nINLET (W=0):")
             for c in m.fs.reactor.component_list:
                 flow = value(m.fs.reactor.flow_mol_comp[t, W_inlet, c])
                 print(f"  {c:8s}: {flow:.6f} kmol/s")
-            
+
             print("\nOUTLET (W=1):")
             W_outlet = m.fs.reactor.W.last()
             for c in m.fs.reactor.component_list:
                 flow = value(m.fs.reactor.flow_mol_comp[t, W_outlet, c])
                 print(f"  {c:8s}: {flow:.6f} kmol/s")
-            
-            # Calculate conversions
+
             inlet_CO = value(m.fs.reactor.flow_mol_comp[t, W_inlet, 'CO'])
             outlet_CO = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'CO'])
             CO_conversion = 100 * (inlet_CO - outlet_CO) / inlet_CO if inlet_CO > 1e-6 else 0
-            
+
             inlet_H2 = value(m.fs.reactor.flow_mol_comp[t, W_inlet, 'H2'])
             outlet_H2 = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'H2'])
             H2_conversion = 100 * (inlet_H2 - outlet_H2) / inlet_H2 if inlet_H2 > 1e-6 else 0
-            
+
             print(f"\nCO Conversion: {CO_conversion:.2f}%")
             print(f"H2 Conversion: {H2_conversion:.2f}%")
-            
-            # Product yields
+
             print("\nProduct Formation:")
-            CH4_out = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'CH4'])
-            C2H4_out = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'C2H4'])
-            C5p_out = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'C5plus'])
-            print(f"  CH4 yield:     {CH4_out:.6f} kmol/s")
-            print(f"  C2H4 yield:    {C2H4_out:.6f} kmol/s")
-            print(f"  C5+ yield:     {C5p_out:.6f} kmol/s")
+            c1_out = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'C1'])
+            c2c4_out = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'C2_C4'])
+            c5c12_out = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'C5_C12'])
+            c13p_out = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'C13_plus'])
+            print(f"  C1 yield:        {c1_out:.6f} kmol/s")
+            print(f"  C2-C4 yield:     {c2c4_out:.6f} kmol/s")
+            print(f"  C5-C12 yield:    {c5c12_out:.6f} kmol/s")
+            print(f"  C13+ yield:      {c13p_out:.6f} kmol/s")
             print("="*70)
-            
-            # Verify atom conservation
+
             print("\n5. Verifying atom conservation...")
             verify_atom_conservation(m, inlet_flow, tolerance=1.0)
-            
-            print("[OK] SELF-TEST 1 PASSED: Reactor solves with atom conservation!")
-            
-            # Now run the comparison test
-            print("\n" + "="*70)
-            print("TEST 2: FT vs FT + Zeolite Comparison")
-            print("="*70)
-            test_ft_vs_ft_with_zeolite()
-            
-        else:
-            print(f"[FAIL] Solver failed: {results.solver.termination_condition}")
+
+            if m.fs.reactor.config.energy_balance:
+                print("\nTemperature profile (K):")
+                for w in m.fs.reactor.W:
+                    T_w = value(m.fs.reactor.temperature[t, w])
+                    print(f"  W={w:.3f}: T={T_w:.2f}")
+
+            return True
+
+        print(f"[FAIL] Solver failed: {results.solver.termination_condition}")
+        logging.getLogger('pyomo.util.infeasible').setLevel(logging.INFO)
+        log_infeasible_constraints(m, tol=1e-6)
+        log_infeasible_bounds(m, tol=1e-6)
+        return False
     except Exception as e:
         print(f"[FAIL] Error during solve: {e}")
         import traceback
         traceback.print_exc()
+        return False
+
+
+if __name__ == '__main__':
+    # ==================== EDIT PARAMETERS HERE ====================
+    SIM_CONFIG = {
+        # Model toggles
+        'include_zeolite_reactions': True,
+        'energy_balance': True,
+        'pressure_drop': True,
+        'ergun_pressure_drop': True,
+        'heat_transfer': True,
+        'mass_transfer': True,
+
+        # Operating conditions
+        'temperature': 523.15,   # K
+        'pressure_bar': 20.0,    # bar
+        'W_total': 1.0,          # kg catalyst
+        'nfe': 10,               # spatial elements
+
+        # Kinetics (base case)
+        'k_rwgs': 0.001,
+        'Keq_rwgs': 0.8,
+        'k_c1': 0.0002,
+        'k_c2_c4': 0.0001,
+        'k_c5_c12': 0.00005,
+        'k_c13_plus': 0.00002,
+        'k_cracking': 0.00002,
+        'k_light_cracking': 0.00001,
+        'k_isomerization': 0.00001,
+        'k_oligomerization': 0.000008,
+        'k_aromatization': 0.000005,
+        'k_coke_formation': 0.000001,
+        'dp_dw': 1.0e3,
+        'ergun_porosity': 0.40,
+        'particle_diameter': 5.0e-3,
+        'catalyst_bulk_density': 1000.0,
+        'reactor_diameter': 1.0,
+        'reactor_length': 1.0,
+        'gas_viscosity': 1.0e-5,
+        'ua_per_kg': 0.01,
+        'T_coolant': 500.0,
+        'eta_ft': 0.9,
+        'eta_zeolite': 0.8,
+
+        # Solver
+        'max_iter': 500,
+        'tol': 1e-6,
+        'staged_solve': True,
+    }
+
+    # Inlet composition (kmol/s): CO2 + H2 feed
+    INLET_FLOW = {
+        'CO2': 0.3,
+        'H2': 0.7,
+        'CO': 0.0,
+        'H2O': 0.0,
+        'C1': 0.0,
+        'C2_C4': 0.0,
+        'C5_C12': 0.0,
+        'C13_plus': 0.0,
+        'iso_C5_C12': 0.0,
+        'aromatics': 0.0,
+        'coke': 0.0,
+    }
+    # ==============================================================
+
+    run_single_simulation(SIM_CONFIG, INLET_FLOW)
 
