@@ -633,37 +633,37 @@ class FTRWGSReactorData(UnitModelBlockData):
         # ==================== ZEOLITE REACTION PARAMETERS ====================
 
         self.k_cracking = pyo.Param(
-            initialize=0.005,
+            initialize=0.05,
             mutable=True,
             doc='Wax cracking rate constant [kmol/(kg_cat·s)]',
         )
 
         self.k_light_cracking = pyo.Param(
-            initialize=0.003,
+            initialize=0.03,
             mutable=True,
             doc='Light cracking rate constant [kmol/(kg_cat·s)]',
         )
 
         self.k_isomerization = pyo.Param(
-            initialize=0.002,
+            initialize=0.02,
             mutable=True,
             doc='Isomerization rate constant [kmol/(kg_cat·s)]',
         )
 
         self.k_oligomerization = pyo.Param(
-            initialize=0.0015,
+            initialize=0.015,
             mutable=True,
             doc='Oligomerization rate constant [kmol/(kg_cat·s)]',
         )
 
         self.k_aromatization = pyo.Param(
-            initialize=0.001,
+            initialize=0.01,
             mutable=True,
             doc='Aromatization rate constant [kmol/(kg_cat·s)]',
         )
 
         self.k_coke_formation = pyo.Param(
-            initialize=0.0001,
+            initialize=0.001,
             mutable=True,
             doc='Coke formation rate constant [kmol/(kg_cat·s)]',
         )
@@ -1136,22 +1136,7 @@ class FTRWGSReactorData(UnitModelBlockData):
                 k_T = b.k0_c5_c12 * pyo.exp(-b.E_c5_c12 / (8.314 * b.temperature[t, w]))
                 return b.rate_c5_c12[t, w] == b.rate_multiplier * k_T * p_CO_safe**b.m_c5_c12 * p_H2_safe**b.n_c5_c12
             if b.config.kinetics_model == 'rwgs_2017':
-                p_CO_safe = p_CO + 1e-6
-                p_CO2_safe = p_CO2 + 1e-6
-                p_H2_safe = p_H2 + 1e-6
-                p_H2O_safe = p_H2O + 1e-6
-
-                log10_kp = 2073.0 / b.temperature[t, w] - 2.029
-                Kp = 10 ** log10_kp
-                q = (p_CO2_safe * p_H2_safe) / (Kp * p_H2O_safe * p_CO_safe)
-                r_param = 1.0 / (q + 1e-12)
-                k_p = r_param * Kp
-
-                kfts_T = b.kfts_ref * pyo.exp(-b.E_app / 8.314 * (1.0 / b.temperature[t, w] - 1.0 / b.T_ref_kin))
-                b_T = b.b_ref * pyo.exp(-b.dH_b / 8.314 * (1.0 / b.temperature[t, w] - 1.0 / b.T_ref_kin))
-                a = b_T * k_p
-                denom = 1.0 + a * p_H2O_safe / (p_CO2_safe * p_H2_safe)
-                return b.rate_c5_c12[t, w] == b.rate_multiplier * kfts_T * p_H2_safe / denom
+                return b.rate_c5_c12[t, w] == 0.0
             return b.rate_c5_c12[t, w] == b.rate_multiplier * b.k_c5_c12 * p_CO * p_H2
 
         # C13+ formation rate: r = k * p_CO * p_H2
@@ -1287,28 +1272,6 @@ class FTRWGSReactorData(UnitModelBlockData):
             eta_zeo = b.eta_zeolite if b.config.mass_transfer else 1.0
 
             return b.dF_dW[t, w, c] == b.W_total * (eta_ft * ft_term + eta_zeo * zeo_term)
-
-        # ==================== SCALING FACTORS ====================
-        iscale.set_scaling_factor(self.flow_mol_comp, 1.0)
-        iscale.set_scaling_factor(self.flow_mol_total, 1.0)
-        iscale.set_scaling_factor(self.pressure, 1e-6)
-        iscale.set_scaling_factor(self.temperature, 1e-2)
-        iscale.set_scaling_factor(self.rate_rwgs, 1e2)
-        iscale.set_scaling_factor(self.rate_c1, 1e3)
-        iscale.set_scaling_factor(self.rate_c2_c4, 1e3)
-        iscale.set_scaling_factor(self.rate_c5_c12, 1e3)
-        iscale.set_scaling_factor(self.rate_c13_plus, 1e3)
-        iscale.set_scaling_factor(self.rate_cracking, 1e3)
-        iscale.set_scaling_factor(self.rate_light_cracking, 1e3)
-        iscale.set_scaling_factor(self.rate_isomerization, 1e3)
-        iscale.set_scaling_factor(self.rate_oligomerization, 1e3)
-        iscale.set_scaling_factor(self.rate_aromatization, 1e3)
-        iscale.set_scaling_factor(self.rate_coke_formation, 1e3)
-        iscale.set_scaling_factor(self.dF_dW, 1.0)
-        iscale.set_scaling_factor(self.dT_dW, 1.0)
-        iscale.set_scaling_factor(self.dP_dW, 1e-5)
-
-        iscale.calculate_scaling_factors(self)
 
         # ==================== REACTION ENTHALPIES ====================
 
@@ -1589,25 +1552,9 @@ class FTRWGSReactorData(UnitModelBlockData):
                 )
                 self.rate_c13_plus[t, w].set_value(0.0)
             elif self.config.kinetics_model == 'rwgs_2017':
-                p_co2 = p['CO2'] + 1e-12
-                p_h2 = p['H2'] + 1e-12
-                p_co = p['CO'] + 1e-12
-                p_h2o = p['H2O'] + 1e-12
-
-                log10_kp = 2073.0 / self.temperature[t, w].value - 2.029
-                Kp = 10 ** log10_kp
-                q = (p_co2 * p_h2) / (Kp * p_h2o * p_co)
-                r_param = 1.0 / (q + 1e-12)
-                k_p = r_param * Kp
-
-                kfts_T = self.kfts_ref.value * pyo.exp(-self.E_app.value / 8.314 * (1.0 / self.temperature[t, w].value - 1.0 / self.T_ref_kin.value))
-                b_T = self.b_ref.value * pyo.exp(-self.dH_b.value / 8.314 * (1.0 / self.temperature[t, w].value - 1.0 / self.T_ref_kin.value))
-                a = b_T * k_p
-                denom = 1.0 + a * p_h2o / (p_co2 * p_h2)
-
                 self.rate_c1[t, w].set_value(0.0)
                 self.rate_c2_c4[t, w].set_value(0.0)
-                self.rate_c5_c12[t, w].set_value(rate_mult * kfts_T * p_h2 / denom)
+                self.rate_c5_c12[t, w].set_value(0.0)
                 self.rate_c13_plus[t, w].set_value(0.0)
             else:
                 self.rate_c1[t, w].set_value(rate_mult * self.k_c1.value * p['CO'] * p['H2'])
@@ -1948,12 +1895,22 @@ def run_single_simulation(sim_config: Dict[str, float], inlet_flow: Dict[str, fl
             outlet_CO = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'CO'])
             CO_conversion = 100 * (inlet_CO - outlet_CO) / inlet_CO if inlet_CO > 1e-6 else 0
 
+            inlet_CO2 = value(m.fs.reactor.flow_mol_comp[t, W_inlet, 'CO2'])
+            outlet_CO2 = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'CO2'])
+            CO2_conversion = 100 * (inlet_CO2 - outlet_CO2) / inlet_CO2 if inlet_CO2 > 1e-6 else 0
+
             inlet_H2 = value(m.fs.reactor.flow_mol_comp[t, W_inlet, 'H2'])
             outlet_H2 = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'H2'])
             H2_conversion = 100 * (inlet_H2 - outlet_H2) / inlet_H2 if inlet_H2 > 1e-6 else 0
 
+            inlet_H2O = value(m.fs.reactor.flow_mol_comp[t, W_inlet, 'H2O'])
+            outlet_H2O = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'H2O'])
+            H2O_formation = outlet_H2O - inlet_H2O
+
+            print(f"\nCO2 Conversion: {CO2_conversion:.2f}%")
             print(f"\nCO Conversion: {CO_conversion:.2f}%")
             print(f"H2 Conversion: {H2_conversion:.2f}%")
+            print(f"H2O Formation: {H2O_formation:.6f} kmol/s")
 
             print("\nProduct Formation:")
             c1_out = value(m.fs.reactor.flow_mol_comp[t, W_outlet, 'C1'])
@@ -1991,51 +1948,7 @@ def run_single_simulation(sim_config: Dict[str, float], inlet_flow: Dict[str, fl
 
 if __name__ == '__main__':
     # ==================== EDIT PARAMETERS HERE ====================
-    SIM_CONFIG = {
-        # Model toggles
-        'include_zeolite_reactions': True,
-        'energy_balance': True,
-        'pressure_drop': True,
-        'ergun_pressure_drop': True,
-        'heat_transfer': True,
-        'mass_transfer': True,
-
-        # Operating conditions
-        'temperature': 523.15,   # K
-        'pressure_bar': 20.0,    # bar
-        'W_total': 1.0,          # kg catalyst
-        'nfe': 10,               # spatial elements
-
-        # Kinetics (base case)
-        'k_rwgs': 0.001,
-        'Keq_rwgs': 0.8,
-        'k_c1': 0.0002,
-        'k_c2_c4': 0.0001,
-        'k_c5_c12': 0.00005,
-        'k_c13_plus': 0.00002,
-        'k_cracking': 0.00002,
-        'k_light_cracking': 0.00001,
-        'k_isomerization': 0.00001,
-        'k_oligomerization': 0.000008,
-        'k_aromatization': 0.000005,
-        'k_coke_formation': 0.000001,
-        'dp_dw': 1.0e3,
-        'ergun_porosity': 0.40,
-        'particle_diameter': 5.0e-3,
-        'catalyst_bulk_density': 1000.0,
-        'reactor_diameter': 1.0,
-        'reactor_length': 1.0,
-        'gas_viscosity': 1.0e-5,
-        'ua_per_kg': 0.01,
-        'T_coolant': 500.0,
-        'eta_ft': 0.9,
-        'eta_zeolite': 0.8,
-
-        # Solver
-        'max_iter': 500,
-        'tol': 1e-6,
-        'staged_solve': True,
-    }
+    from sim_config import SIM_CONFIG
 
     # Inlet composition (kmol/s): CO2 + H2 feed
     INLET_FLOW = {

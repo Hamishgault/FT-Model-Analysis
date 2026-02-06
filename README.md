@@ -14,6 +14,7 @@ This project implements a **bifunctional packed-bed reactor** combining RWGS (Re
 - **NumPy/SciPy**: Numerical computing and scientific algorithms
 - **Pandas**: Data manipulation and analysis
 - **Matplotlib**: Visualization
+- **emcee/ArviZ**: Bayesian parameter inference (optional calibration)
 
 ## Project Structure
 
@@ -78,6 +79,19 @@ Run the single simulation entry point:
 ```bash
 python src/ft_model/ft_rwgs_zeolite_reactor.py
 ```
+
+### Structural sensitivity + operating scan
+
+Run the automated sensitivity screening and operating window map:
+
+```bash
+python examples/structural_audit.py
+```
+
+Outputs (saved under examples/outputs/):
+- sensitivity_table.csv
+- sensitivity_ranking.csv
+- operating_map.png
 
 **Expected Output**:
 ```
@@ -162,3 +176,18 @@ python src/ft_model/ft_rwgs_zeolite_reactor.py
 - Temperature: 523.15 K (250°C)
 - Pressure: 20 bar
 - Catalyst mass: 5 kg
+
+## Bayesian updating (recommended next step)
+
+The model is stable but uncalibrated. A practical calibration workflow is:
+1. Define priors on kinetic and transport parameters (e.g., k_rwgs, k_c1, k_c2_c4, k_c5_c12, k_c13_plus, k_cracking, k_light_cracking, eta_ft, ua_per_kg, dp_dw).
+2. Define a likelihood using measured conversion/selectivity/yield with uncertainty.
+3. Sample posterior parameters using MCMC (e.g., emcee) and analyze with ArviZ.
+
+Suggested experimental results to collect for calibration:
+- Inlet and outlet molar flow rates for CO2, H2, CO, H2O, and hydrocarbon lumps (C5–C12, C13+).
+- CO2 conversion and CO selectivity (with measurement uncertainty).
+- Product yields/selectivities at steady state (C5–C12, C13+, aromatics if available).
+- Operating conditions: temperature, pressure, H2/CO2 ratio, total flow, catalyst mass, and reactor geometry.
+- If available: pressure drop along bed and coolant temperature/UA (for heat-transfer calibration).
+- Replicate runs at a few operating points to estimate experimental variance for likelihood weighting.

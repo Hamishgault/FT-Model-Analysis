@@ -18,22 +18,29 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from pyomo.environ import ConcreteModel, SolverFactory, TerminationCondition, value
+from idaes.core import FlowsheetBlock
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, PROJECT_ROOT)
+SRC_DIR = os.path.join(PROJECT_ROOT, "src")
+sys.path.insert(0, SRC_DIR)
 
-from examples.compare_co2_feed_analysis import (
-    SIM_CONFIG,
-    PRODUCT_COMPONENTS,
-    build_inlet_flow,
-    solve_until_equilibrium,
-    extract_profiles,
-    solve_case_with_retry,
-)
+from ft_model.ft_rwgs_zeolite_reactor import FTRWGSReactor, discretize_reactor  # type: ignore[reportMissingImports]
+from ft_model.sim_config import SIM_CONFIG  # type: ignore[reportMissingImports]
 
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "examples", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+
+PRODUCT_COMPONENTS = [
+    "C1",
+    "C2_C4",
+    "C5_C12",
+    "C13_plus",
+    "iso_C5_C12",
+    "aromatics",
+    "coke",
+]
 
 SENSITIVITY_PARAMS = [
     "k_rwgs",
@@ -54,6 +61,238 @@ METRICS = [
     "c5_c12_yield",
     "c13_plus_yield",
 ]
+
+AUDIT_OVERRIDES = {
+    "max_iter": 4000,
+    "nfe": 6,
+    "acceptable_tol": 1e-5,
+}
+
+
+def build_inlet_flow(co2_fraction: float, total_flow: float = 1.0) -> Dict[str, float]:
+    eps = 1e-8
+    co2_flow = total_flow * co2_fraction
+    h2_flow = total_flow * (1 - co2_fraction)
+    return {
+        "CO2": co2_flow,
+        "H2": h2_flow,
+        "CO": eps,
+        "H2O": eps,
+        "C1": eps,
+        "C2_C4": eps,
+        "C5_C12": eps,
+        "C13_plus": eps,
+        "iso_C5_C12": eps,
+        "aromatics": eps,
+        "coke": eps,
+    }
+
+
+def solve_case(sim_config: Dict[str, float], inlet_flow: Dict[str, float]):
+    m = ConcreteModel()
+    m.fs = FlowsheetBlock(dynamic=False, time_set=[0])
+
+    m.fs.reactor = FTRWGSReactor(
+        include_zeolite_reactions=bool(sim_config["include_zeolite_reactions"]),
+        energy_balance=bool(sim_config["energy_balance"]),
+        pressure_drop=bool(sim_config["pressure_drop"]),
+        ergun_pressure_drop=bool(sim_config["ergun_pressure_drop"]),
+        heat_transfer=bool(sim_config["heat_transfer"]),
+        mass_transfer=bool(sim_config["mass_transfer"]),
+        kinetics_model=sim_config.get("kinetics_model", "lumped_simple"),
+    )
+
+    m.fs.reactor.initialize(
+        inlet_flow=inlet_flow,
+        temperature=sim_config["temperature"],
+        pressure=sim_config["pressure_bar"] * 101325.0,
+        W_total=sim_config["W_total"],
+        k_rwgs=sim_config["k_rwgs"],
+        Keq_rwgs=sim_config["Keq_rwgs"],
+        k_c1=sim_config["k_c1"],
+        k_c2_c4=sim_config["k_c2_c4"],
+        k_c5_c12=sim_config["k_c5_c12"],
+        k_c13_plus=sim_config["k_c13_plus"],
+        k_cracking=sim_config["k_cracking"],
+        k_light_cracking=sim_config["k_light_cracking"],
+        k_isomerization=sim_config["k_isomerization"],
+        k_oligomerization=sim_config["k_oligomerization"],
+        k_aromatization=sim_config["k_aromatization"],
+        k_coke_formation=sim_config["k_coke_formation"],
+        kfts_ref=sim_config.get("kfts_ref"),
+        E_app=sim_config.get("E_app"),
+        b_ref=sim_config.get("b_ref"),
+        dH_b=sim_config.get("dH_b"),
+        T_ref=sim_config.get("T_ref"),
+        beta_gasoline=sim_config.get("beta_gasoline"),
+        beta_jet=sim_config.get("beta_jet"),
+        beta_diesel=sim_config.get("beta_diesel"),
+        split_c5_gasoline=sim_config.get("split_c5_gasoline"),
+        split_c5_jet=sim_config.get("split_c5_jet"),
+        split_c13_diesel=sim_config.get("split_c13_diesel"),
+        dp_dw=sim_config["dp_dw"],
+        ergun_porosity=sim_config["ergun_porosity"],
+        particle_diameter=sim_config["particle_diameter"],
+        catalyst_bulk_density=sim_config["catalyst_bulk_density"],
+        reactor_diameter=sim_config["reactor_diameter"],
+        reactor_length=sim_config["reactor_length"],
+        gas_viscosity=sim_config["gas_viscosity"],
+        ua_per_kg=sim_config["ua_per_kg"],
+        T_coolant=sim_config["T_coolant"],
+        eta_ft=sim_config["eta_ft"],
+        eta_zeolite=sim_config["eta_zeolite"],
+    )
+
+    discretize_reactor(m.fs.reactor, nfe=int(sim_config["nfe"]))
+
+    t = 0
+    w_inlet = m.fs.reactor.W.first()
+    for comp in m.fs.reactor.component_list:
+        m.fs.reactor.flow_mol_comp[t, w_inlet, comp].set_value(inlet_flow.get(comp, 0.0))
+
+    m.fs.reactor.temperature[t, w_inlet].set_value(sim_config["temperature"])
+    m.fs.reactor.pressure[t, w_inlet].set_value(sim_config["pressure_bar"] * 101325.0)
+
+    solver = SolverFactory("ipopt")
+    solver.options["max_iter"] = int(sim_config["max_iter"])
+    solver.options["tol"] = sim_config["tol"]
+    if sim_config.get("acceptable_tol") is not None:
+        solver.options["acceptable_tol"] = sim_config["acceptable_tol"]
+    if sim_config.get("linear_solver"):
+        solver.options["linear_solver"] = sim_config["linear_solver"]
+    if sim_config.get("bound_push") is not None:
+        solver.options["bound_push"] = sim_config["bound_push"]
+    if sim_config.get("mu_strategy"):
+        solver.options["mu_strategy"] = sim_config["mu_strategy"]
+
+    try:
+        results = solver.solve(m, tee=False)
+    except Exception:
+        return None
+
+    term_cond = results.solver.termination_condition
+    if term_cond not in (
+        TerminationCondition.optimal,
+        TerminationCondition.locallyOptimal,
+        TerminationCondition.feasible,
+        TerminationCondition.maxIterations,
+    ):
+        return None
+
+    if term_cond == TerminationCondition.maxIterations:
+        print("[WARN] Solver hit maxIterations; using last iterate for audit metrics.")
+
+    return m
+
+
+def solve_case_with_retry(sim_config: Dict[str, float], inlet_flow: Dict[str, float]):
+    w_scales = (1.0, 0.5, 0.2, 0.1)
+    k_scales = (1.0, 0.5, 0.2, 0.1)
+    nfe_values = (sim_config["nfe"], max(6, sim_config["nfe"] // 2), 6)
+    kinetic_keys = [
+        "k_rwgs",
+        "k_c1",
+        "k_c2_c4",
+        "k_c5_c12",
+        "k_c13_plus",
+        "k_cracking",
+        "k_light_cracking",
+        "k_isomerization",
+        "k_oligomerization",
+        "k_aromatization",
+        "k_coke_formation",
+    ]
+
+    def _attempt(base_config: Dict[str, float]):
+        for nfe in nfe_values:
+            for w_scale in w_scales:
+                for k_scale in k_scales:
+                    attempt_config = dict(base_config)
+                    attempt_config["nfe"] = int(nfe)
+                    attempt_config["W_total"] = base_config["W_total"] * w_scale
+                    for key in kinetic_keys:
+                        attempt_config[key] = base_config[key] * k_scale
+                    if base_config.get("kfts_ref") is not None:
+                        attempt_config["kfts_ref"] = base_config["kfts_ref"] * k_scale
+
+                    model = solve_case(attempt_config, inlet_flow)
+                    if model is not None:
+                        return model, attempt_config
+        return None, base_config
+
+    return _attempt(sim_config)
+
+
+def find_equilibrium_index(W: np.ndarray, mole_frac: Dict[str, np.ndarray], tol: float = 1e-4) -> int:
+    if W.size < 3:
+        return W.size - 1
+
+    max_grad = np.zeros_like(W)
+    for values in mole_frac.values():
+        grad = np.abs(np.gradient(values, W))
+        max_grad = np.maximum(max_grad, grad)
+
+    for idx in range(1, W.size):
+        if np.all(max_grad[idx:] < tol):
+            return idx
+    return W.size - 1
+
+
+def extract_profiles(m, eq_tol: float):
+    reactor = m.fs.reactor
+    t = 0
+    W_points = list(reactor.W)
+    W = np.array([float(w) for w in W_points])
+
+    total_flow = np.array([value(reactor.flow_mol_total[t, w]) for w in W_points])
+    total_flow = np.where(total_flow > 1e-12, total_flow, 1.0)
+
+    product_flows = {
+        comp: np.array([value(reactor.flow_mol_comp[t, w, comp]) for w in W_points])
+        for comp in PRODUCT_COMPONENTS
+    }
+
+    product_mole_frac = {
+        comp: 100.0 * product_flows[comp] / total_flow for comp in PRODUCT_COMPONENTS
+    }
+
+    all_mole_frac = {
+        comp: 100.0 * np.array([value(reactor.flow_mol_comp[t, w, comp]) for w in W_points]) / total_flow
+        for comp in reactor.component_list
+    }
+
+    co2_flow = np.array([value(reactor.flow_mol_comp[t, w, "CO2"]) for w in W_points])
+    co2_mole_frac = 100.0 * co2_flow / total_flow
+
+    eq_idx = find_equilibrium_index(W, all_mole_frac, tol=eq_tol)
+    W_eq = W[eq_idx]
+
+    return W, product_mole_frac, co2_mole_frac, all_mole_frac, W_eq
+
+
+def solve_until_equilibrium(sim_config: Dict[str, float], inlet_flow: Dict[str, float]):
+    eq_tol = sim_config.get("equilibrium_tol", 1e-4)
+    model, used_config = solve_case_with_retry(sim_config, inlet_flow)
+
+    if model is None:
+        return None
+
+    try:
+        profiles = extract_profiles(model, eq_tol)
+    except Exception:
+        return None
+
+    W = profiles[0]
+    W_eq = profiles[-1]
+    if W_eq < 0.95 * W[-1]:
+        print(f"[INFO] Equilibrium reached at W={W_eq:.3f} with W_total={used_config['W_total']}")
+    else:
+        print(
+            f"[WARN] Equilibrium not reached (W_eq={W_eq:.3f} ~ W_end={W[-1]:.3f}) "
+            f"with W_total={used_config['W_total']}"
+        )
+
+    return profiles
 
 
 def safe_solve(sim_config: Dict[str, float], inlet_flow: Dict[str, float]):
@@ -82,7 +321,7 @@ def compute_metrics_from_profiles(
     Conversion/selectivity here are based on mole fractions because the helper
     profiles do not return total molar flow. This is suitable for screening.
     """
-    (W, product_mole_frac, _mapped_mole_frac, co2_mole_frac, all_mole_frac, W_eq) = profiles
+    (W, product_mole_frac, co2_mole_frac, all_mole_frac, W_eq) = profiles
 
     idx = _equilibrium_index(W, W_eq)
     total_inlet = sum(inlet_flow.values())
@@ -236,7 +475,7 @@ def operating_space_scan(
                 c5_selectivity_map[i, j] = np.nan
                 continue
 
-            (W, product_mole_frac, _mapped, _co2, _all, W_eq) = profiles
+            (W, product_mole_frac, _co2, _all, W_eq) = profiles
             idx = _equilibrium_index(W, W_eq)
             product_sum = 0.0
             for comp in PRODUCT_COMPONENTS:
@@ -285,6 +524,7 @@ def plot_operating_map(
 
 def main():
     base_config = deepcopy(SIM_CONFIG)
+    base_config.update(AUDIT_OVERRIDES)
 
     # Base inlet: H2/CO2 ratio = 3 (CO2 fraction = 0.25)
     base_ratio = 3.0

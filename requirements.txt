@@ -7,3 +7,5 @@ scipy
 python-dotenv
 pytest
 pyyaml
+emcee
+arviz

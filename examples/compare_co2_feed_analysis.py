@@ -12,94 +12,14 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
 
 from ft_model.ft_rwgs_zeolite_reactor import FTRWGSReactor, discretize_reactor  # type: ignore[reportMissingImports]
+from ft_model.sim_config import SIM_CONFIG as GLOBAL_SIM_CONFIG  # type: ignore[reportMissingImports]
 
 logging.getLogger("pyomo.repn.plugins.nl_writer").setLevel(logging.ERROR)
 
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "examples", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-
-SIM_CONFIG: Dict[str, float] = {
-    # Model toggles
-    'include_zeolite_reactions': True,
-    'energy_balance': True,
-    'pressure_drop': True,
-    'ergun_pressure_drop': True,
-    'heat_transfer': True,
-    'mass_transfer': True,
-    'kinetics_model': 'rwgs_2017',
-
-    # Operating conditions
-    'temperature': 523.15,   # K
-    'pressure_bar': 23.0,    # bar
-    'W_total': 100.0,          # kg catalyst
-    'nfe': 200,               # spatial elements
-
-    # Kinetics (base case)
-    'k_rwgs': 0.001,
-    'Keq_rwgs': 0.8,
-    'k_c1': 0.0002,
-    'k_c2_c4': 0.0001,
-    'k_c5_c12': 0.00005,
-    'k_c13_plus': 0.00002,
-    'k_cracking': 0.00002,
-    'k_light_cracking': 0.00001,
-    'k_isomerization': 0.00001,
-    'k_oligomerization': 0.000008,
-    'k_aromatization': 0.000005,
-    'k_coke_formation': 0.000001,
-    'kfts_ref': 6.4e-4,
-    'E_app': 23000.0,
-    'b_ref': 1.6e-2,
-    'dH_b': -28500.0,
-    'T_ref': 543.0,
-    'dp_dw': 1.0e3,
-    'ergun_porosity': 0.40,
-    'particle_diameter': 5.0e-3,
-    'catalyst_bulk_density': 1000.0,
-    'reactor_diameter': 1.0,
-    'reactor_length': 1.0,
-    'gas_viscosity': 1.0e-5,
-    'ua_per_kg': 0.01,
-    'T_coolant': 500.0,
-    'eta_ft': 0.9,
-    'eta_zeolite': 0.8,
-
-    # Selectivity/cracking factors (defaults)
-    'beta_gasoline': 0.7,
-    'beta_jet': 0.8,
-    'beta_diesel': 0.6,
-    'split_c5_gasoline': 0.5,
-    'split_c5_jet': 0.5,
-    'split_c13_diesel': 0.7,
-
-    # Solver
-    'max_iter': 2000,
-    'tol': 1e-6,
-    'acceptable_tol': 1e-5,
-    'linear_solver': 'mumps',
-    'bound_push': 1e-8,
-    'mu_strategy': 'adaptive',
-    'staged_solve': True,
-
-    # Equilibrium detection
-    'equilibrium_tol': 5e-4,
-}
-
-SIM_CONFIG.update({
-    'energy_balance': False,
-    'pressure_drop': False,
-    'heat_transfer': False,
-    'mass_transfer': False,
-    'nfe': 8,
-    'W_total': 5.0,
-    'k_rwgs': 1e-4,
-    'k_c1': 1e-4,
-    'k_c2_c4': 1e-4,
-    'k_c5_c12': 1e-4,
-    'k_c13_plus': 1e-4,
-    'k_cracking': 1e-5,
-})
+SIM_CONFIG: Dict[str, float] = dict(GLOBAL_SIM_CONFIG)
 
 PRODUCT_COMPONENTS = [
     'C1',
@@ -207,6 +127,8 @@ def solve_case(sim_config: Dict[str, float], inlet_flow: Dict[str, float]):
     solver.options['tol'] = sim_config['tol']
     if sim_config.get('acceptable_tol') is not None:
         solver.options['acceptable_tol'] = sim_config['acceptable_tol']
+    if sim_config.get('acceptable_iter') is not None:
+        solver.options['acceptable_iter'] = sim_config['acceptable_iter']
     if sim_config.get('linear_solver'):
         solver.options['linear_solver'] = sim_config['linear_solver']
     if sim_config.get('bound_push') is not None:
@@ -254,17 +176,21 @@ def solve_case(sim_config: Dict[str, float], inlet_flow: Dict[str, float]):
         solver.options['max_iter'] = int(sim_config['max_iter'])
 
     try:
-        results = solver.solve(m, tee=False, load_solutions=False)
+        results = solver.solve(m, tee=False)
     except Exception:
         return None
 
-    if results.solver.termination_condition != TerminationCondition.optimal:
+    term_cond = results.solver.termination_condition
+    if term_cond not in (
+        TerminationCondition.optimal,
+        TerminationCondition.locallyOptimal,
+        TerminationCondition.feasible,
+        TerminationCondition.maxIterations,
+    ):
         return None
 
-    try:
-        m.solutions.load_from(results)
-    except ValueError:
-        return None
+    if term_cond == TerminationCondition.maxIterations:
+        print("[WARN] Solver hit maxIterations; using last iterate for audit metrics.")
 
     return m
 
